@@ -10,6 +10,8 @@
 #include <fstream>
 #include <system_error>
 
+#include <sstream>
+
 #include <nlohmann/json.hpp>
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -84,6 +86,75 @@ std::string StripV(std::string v) {
   if (!v.empty() && (v[0] == 'v' || v[0] == 'V'))
     v.erase(0, 1);
   return v;
+}
+
+// Markdown inline formatting off: **bold**, `code`, [text](link) -> text.
+std::string PlainText(std::string s) {
+  std::string out;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '*' || s[i] == '`')
+      continue;
+    if (s[i] == '[') {
+      const size_t close = s.find("](", i);
+      const size_t end = close == std::string::npos ? close : s.find(')', close);
+      if (end != std::string::npos) {
+        out += PlainText(s.substr(i + 1, close - i - 1));
+        i = end;
+        continue;
+      }
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+// The part of a release's notes that says what changed: from its "## " heading up to the
+// download / install instructions every release repeats. Code blocks are left out.
+std::string ReleaseChanges(const std::string& markdown, const std::string& tag,
+                           std::string* title) {
+  std::string out, line;
+  bool started = false, code = false;
+  std::istringstream in(markdown);
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    if (line.rfind("```", 0) == 0) {
+      code = !code;
+      continue;
+    }
+    if (code)
+      continue;
+    if (line.rfind("## ", 0) == 0) {
+      if (started)
+        break;
+      started = true;
+      const std::string heading = PlainText(line.substr(3));
+      out += "# " + heading + "\n";
+      if (title) {
+        const size_t colon = heading.find(": ");
+        *title = colon == std::string::npos ? std::string() : heading.substr(colon + 2);
+      }
+      continue;
+    }
+    if (!started)
+      continue;
+    if (line.rfind("### ", 0) == 0 || line.rfind("**Updating", 0) == 0 ||
+        line.rfind("**You need", 0) == 0 || line.rfind("Full step-by-step", 0) == 0)
+      break;
+    size_t lead = line.find_first_not_of(' ');
+    if (lead == std::string::npos) {
+      if (!out.empty() && out.back() != '\n')
+        out += '\n';
+      continue;
+    }
+    std::string text = line.substr(lead);
+    if (text.rfind("- ", 0) == 0 || text.rfind("* ", 0) == 0)
+      text = "- " + text.substr(2);
+    out += PlainText(text) + "\n";
+  }
+  if (!started)  // notes without the usual heading: say which version at least
+    out = "# Version " + StripV(tag) + "\n";
+  return out;
 }
 
 uint32_t Crc32(const uint8_t* data, size_t size) {
@@ -267,6 +338,16 @@ std::string Updater::latest_version() const {
   return latest_;
 }
 
+std::string Updater::notes() const {
+  std::lock_guard lock(mutex_);
+  return notes_;
+}
+
+std::string Updater::headline() const {
+  std::lock_guard lock(mutex_);
+  return headline_;
+}
+
 std::string Updater::backup_folder() const {
   std::lock_guard lock(mutex_);
   return backup_;
@@ -295,13 +376,39 @@ void Updater::StartInstall() {
 void Updater::Check() {
 #if defined(_WIN32)
   std::string body, error;
-  const std::string url = "https://api.github.com/repos/" + config_.repo + "/releases/latest";
+  // The recent releases (newest first): the newest published one, and its notes.
+  const std::string url =
+      "https://api.github.com/repos/" + config_.repo + "/releases?per_page=30";
   if (!HttpGet(url, true, &body, nullptr, 0, nullptr, cancel_, error)) {
     SetStatus(State::kCheckFailed, "Couldn't check for updates (" + error + ").");
     return;
   }
-  const auto json = nlohmann::json::parse(body, nullptr, false);
-  if (json.is_discarded() || !json.is_object()) {
+  const auto list = nlohmann::json::parse(body, nullptr, false);
+  if (list.is_discarded() || !list.is_array()) {
+    SetStatus(State::kCheckFailed, "Couldn't check for updates (unexpected reply).");
+    return;
+  }
+  nlohmann::json json;  // the newest published release
+  std::string notes, headline;
+  int noted = 0;
+  for (const auto& release : list) {
+    if (!release.is_object() || release.value("draft", false) || release.value("prerelease", false))
+      continue;
+    const std::string release_tag = release.value("tag_name", std::string());
+    if (json.is_null())
+      json = release;
+    if (noted < 1 && IsNewer(release_tag, config_.current_version)) {  // the newest version only
+      std::string title;
+      const std::string body_text =
+          release.contains("body") && release["body"].is_string() ? release["body"].get<std::string>() : "";
+      notes += ReleaseChanges(body_text, release_tag, noted == 0 ? &title : nullptr);
+      notes += "\n";
+      if (noted == 0)
+        headline = title;
+      ++noted;
+    }
+  }
+  if (!json.is_object()) {
     SetStatus(State::kCheckFailed, "Couldn't check for updates (unexpected reply).");
     return;
   }
@@ -323,6 +430,8 @@ void Updater::Check() {
   {
     std::lock_guard lock(mutex_);
     latest_ = StripV(tag);
+    notes_ = notes;
+    headline_ = headline;
     zip_url_ = zip_url;
     zip_size_ = zip_size;
   }

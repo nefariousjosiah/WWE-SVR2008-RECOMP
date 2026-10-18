@@ -128,8 +128,9 @@ The game can update itself, but only when you choose to:
 - **At startup** it asks GitHub, in the background, whether a newer version of this port is out.
   If there is one, a notice shows for a few seconds. Nothing is downloaded yet.
 - **To update,** open the settings menu (**F1**, or **Back + Start** on a controller), go down to
-  **Update** and press **A** (or Enter), then once more to confirm. It backs up your saves,
-  downloads the new version, checks it and installs it. Then choose **Restart now**.
+  **Update** and press **A** (or Enter): the menu shows what's new in that version. Press **A**
+  once more to install it. It backs up your saves, downloads the new version, checks it and
+  installs it. Then choose **Restart now**.
 - **Your saves are kept.** The `userdata` folder (saves, profiles, created superstars) is never
   changed, and before every update your saves are also copied to `save_backups\<version>_<date>`
   in the game's folder. Your settings (`svr2008.toml`) and your disc image are kept too. If

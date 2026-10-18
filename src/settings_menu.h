@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -361,13 +362,15 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     const auto now = Clock::now();
     if (!notice_shown_) {
       notice_shown_ = true;
-      notice_until_ = now + std::chrono::seconds(12);
+      notice_until_ = now + std::chrono::seconds(7);
     }
     if (now >= notice_until_)
       return;
     const float s = std::max(0.6f, io.DisplaySize.y / 1080.0f);
-    const std::string line1 = "Update available: version " + u->latest_version();
-    const char* line2 = "Open Settings (F1, or Back + Start) to install it";
+    std::string line1 = "Update available: version " + u->latest_version();
+    if (const std::string headline = u->headline(); !headline.empty())
+      line1 += " - " + headline;
+    const char* line2 = "Open Settings (F1, or Back + Start) to see what's new and install it";
     ImFont* font = g_menu_font ? g_menu_font : ImGui::GetFont();
     const float size1 = 18 * s, size2 = 13 * s;
     const ImVec2 t1 = font->CalcTextSizeA(size1, FLT_MAX, 0.0f, line1.c_str());
@@ -504,6 +507,51 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
       Close();
   }
 
+  // The update's notes (Updater::notes), as much as fits in `height`.
+  void DrawUpdateNotes(ImDrawList* dl, float inner, float height, float s, ImU32 text, ImU32 dim) {
+    const std::string notes = Updater()->notes();
+    const float top = ImGui::GetCursorPosY();
+    ImGui::PushFont(g_menu_font, 18 * s);
+    ImGui::TextColored(ImColor(text), "WHAT'S NEW");
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, 6 * s));
+    ImGui::PushFont(g_menu_font, 13 * s);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inner);
+    std::istringstream in(notes);
+    std::string line;
+    bool cut = false;
+    while (std::getline(in, line)) {
+      if (ImGui::GetCursorPosY() - top > height - 3 * ImGui::GetTextLineHeightWithSpacing()) {
+        cut = true;
+        break;
+      }
+      if (line.empty()) {
+        ImGui::Dummy(ImVec2(0, 4 * s));
+      } else if (line.rfind("# ", 0) == 0) {
+        ImGui::Dummy(ImVec2(0, 4 * s));
+        ImGui::TextColored(ImColor(IM_COL32(255, 255, 255, 255)), "%s", line.c_str() + 2);
+      } else if (line.rfind("- ", 0) == 0) {
+        ImGui::Indent(16 * s);
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        dl->AddCircleFilled(ImVec2(pos.x - 9 * s, pos.y + ImGui::GetTextLineHeight() * 0.5f),
+                            2.5f * s, dim);
+        ImGui::PushStyleColor(ImGuiCol_Text, dim);
+        ImGui::TextWrapped("%s", line.c_str() + 2);
+        ImGui::PopStyleColor();
+        ImGui::Unindent(16 * s);
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, dim);
+        ImGui::TextWrapped("%s", line.c_str());
+        ImGui::PopStyleColor();
+      }
+    }
+    if (cut)
+      ImGui::TextColored(ImColor(text), "...and more: see the releases on GitHub.");
+    ImGui::PopTextWrapPos();
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, 10 * s));
+  }
+
   void Draw(ImGuiIO& io) {
     const float s = std::max(0.6f, io.DisplaySize.y / 1080.0f);
     const ImU32 accent = IM_COL32(214, 38, 38, 255);
@@ -536,7 +584,16 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
       const float row_h = 44 * s;
       const float inner = ImGui::GetContentRegionAvail().x;
       const float value_x = 340 * s;
+      // After the first press on Update: what the update changes, in place of the other rows,
+      // with the Update row (press again to install) under it.
+      const bool notes_page = selected_ == kUpdate && confirm_update_ && Updater() &&
+                              Updater()->state() == svr::Updater::State::kAvailable &&
+                              !Updater()->notes().empty();
+      if (notes_page)
+        DrawUpdateNotes(dl, inner, row_h * (kRows - 2), s, text, dim);
       for (int i = 0; i < kRows; ++i) {
+        if (notes_page && i != kUpdate)
+          continue;
         const Row& row = Rows()[i];
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
         const ImVec2 p1(p0.x + inner, p0.y + row_h);

@@ -56,6 +56,11 @@ class Updater {
   State state() const { return state_.load(); }
   float progress() const { return progress_.load(); }  // 0..1 while kWorking
   std::string latest_version() const;
+  // What the newest version changes, from its GitHub release notes, as plain
+  // text: "# " starts a version's heading, "- " a point, other lines are paragraphs.
+  std::string notes() const;
+  // The newest version's title, e.g. "your own entrance music (User Playlist)"; may be empty.
+  std::string headline() const;
   std::string status() const;  // one line for the menu
   std::string backup_folder() const;
 
@@ -78,6 +83,8 @@ class Updater {
   mutable std::mutex mutex_;
   std::string status_;
   std::string latest_;      // "0.5"
+  std::string notes_;
+  std::string headline_;
   std::string zip_url_;
   uint64_t zip_size_ = 0;
   std::string backup_;      // save_backups\... (relative to the game folder)

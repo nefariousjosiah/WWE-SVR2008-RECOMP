@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 # The release version (shown in the in-game settings menu; package_release.ps1 uses it too).
-project(svr2008 VERSION 1.0.4 LANGUAGES CXX)
+project(svr2008 VERSION 1.0.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
