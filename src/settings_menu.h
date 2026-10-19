@@ -113,6 +113,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     kShape,
     kCounter,
     kSound,
+    kLanguage,
     kKeyboard,
     kControllers,
     kPriority,
@@ -151,6 +152,11 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
          "screen."},
         {"FPS counter", {"Show", "Hide"}, "The frame rate in the corner. F2 also shows or hides it."},
         {"Sound", {"On", "Muted"}, "Mute all of the game's sound."},
+        // The languages on the disc (no French on this one; src/language.cpp). UTF-8 escapes: the
+        // source isn't compiled as UTF-8 everywhere.
+        {"Language", {"English", "Espa\xC3\xB1ol", "Deutsch", "Italiano"},
+         "The language of the game's text and menus (the commentary stays in English). It "
+         "changes when the game restarts: pick one, then press A to restart now."},
         {"Keyboard controls", {"On", "Off"},
          "The keyboard works as a controller (rebind keys with F4). Not tested yet: a controller is "
          "recommended."},
@@ -182,6 +188,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     values_[kShape] = Get("bd_aspect_ratio") == "6" ? 1 : 0;
     values_[kCounter] = hooks_.fps_counter_on && hooks_.fps_counter_on() ? 0 : 1;
     values_[kSound] = Get("audio_mute") == "true" ? 1 : 0;
+    values_[kLanguage] = LanguageRow(std::atoi(Get("user_language").c_str()));
     values_[kKeyboard] = Get("mnk_mode") == "true" ? 0 : 1;
     values_[kControllers] = Get("svr_controllers_shared") == "true" ? 1 : 0;
     values_[kPriority] = Get("svr_high_priority") == "true" ? 1 : 0;
@@ -194,6 +201,15 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
   }
 
   static std::string Get(const char* name) { return rex::cvar::GetFlagByName(name); }
+
+  // Xbox 360 language IDs, in the order of the Language row: English, Spanish, German, Italian.
+  static constexpr int kLanguageIds[] = {1, 5, 3, 6};
+  static int LanguageRow(int id) {
+    for (int i = 0; i < int(std::size(kLanguageIds)); ++i)
+      if (kLanguageIds[i] == id)
+        return i;
+    return 0;  // anything else (set by hand): shown as English until changed here
+  }
 
   void Apply(int row) {
     const int v = values_[row];
@@ -226,6 +242,10 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         break;
       case kSound:
         Set("audio_mute", v == 1 ? "true" : "false");
+        break;
+      case kLanguage:
+        // The console's language setting: the game picks its text by it when it starts.
+        Set("user_language", std::to_string(kLanguageIds[v]));
         break;
       case kKeyboard:
         Set("mnk_mode", v == 0 ? "true" : "false");
@@ -283,6 +303,95 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
       default:
         break;
     }
+  }
+
+  // The language takes effect when the game starts: once a different one is picked, A asks to
+  // restart and a second A restarts the game (with the updater's restart: same command line).
+  bool LanguagePending() const {
+    return std::atoi(Get("user_language").c_str()) != start_language_;
+  }
+  void LanguageAction() {
+    if (!LanguagePending())
+      return;
+    if (!confirm_restart_) {
+      confirm_restart_ = true;
+      return;
+    }
+    confirm_restart_ = false;
+    svr::Updater* u = Updater();
+    if (u && u->Restart()) {
+      if (hooks_.quit)
+        hooks_.quit();
+    } else {
+      language_restart_failed_ = true;
+    }
+  }
+  // The restart prompts in the language being switched to, so players can read them.
+  struct LanguageText {
+    int id;  // Xbox language id
+    const char* restart_now;
+    const char* confirm_value;  // short: it replaces the row's value
+    const char* confirm_hint;
+    const char* failed;
+  };
+  static const LanguageText& TextFor(int id) {
+    static const LanguageText texts[] = {
+        {1,
+         "Press A to restart the game now in English (anything you haven't saved is lost), or "
+         "it changes the next time you start the game.",
+         "Press A again to restart",
+         "Press A again to restart the game now in English. Anything you haven't saved in the "
+         "game is lost.",
+         "The game couldn't restart itself: close it and start it again to play in English."},
+        {5,
+         "Pulsa A para reiniciar el juego ahora en espa\xC3\xB1ol (se perder\xC3\xA1 lo que no "
+         "hayas guardado), o el cambio se aplicar\xC3\xA1 la pr\xC3\xB3xima vez que inicies el "
+         "juego.",
+         "Pulsa A otra vez",
+         "Pulsa A otra vez para reiniciar el juego ahora en espa\xC3\xB1ol. Se perder\xC3\xA1 "
+         "lo que no hayas guardado.",
+         "El juego no pudo reiniciarse: ci\xC3\xA9rralo y vuelve a abrirlo para jugar en espa\xC3\xB1ol."},
+        {4,
+         "Appuyez sur A pour red\xC3\xA9marrer le jeu maintenant en fran\xC3\xA7"
+         "ais (tout ce qui n'est pas sauvegard\xC3\xA9 sera perdu), ou le changement s'appliquera "
+         "au prochain lancement du jeu.",
+         "Appuyez encore sur A",
+         "Appuyez encore sur A pour red\xC3\xA9marrer le jeu maintenant en fran\xC3\xA7"
+         "ais. Tout ce qui n'est pas sauvegard\xC3\xA9 sera perdu.",
+         "Le jeu n'a pas pu red\xC3\xA9marrer : fermez-le et relancez-le pour jouer en fran\xC3\xA7"
+         "ais."},
+        {3,
+         "Dr\xC3\xBC"
+         "cke A, um das Spiel jetzt auf Deutsch neu zu starten (nicht Gespeichertes geht verloren), "
+         "oder die Sprache wechselt beim n\xC3\xA4"
+         "chsten Spielstart.",
+         "Erneut A dr\xC3\xBC"
+         "cken",
+         "Dr\xC3\xBC"
+         "cke erneut A, um das Spiel jetzt auf Deutsch neu zu starten. Nicht Gespeichertes geht "
+         "verloren.",
+         "Das Spiel konnte nicht neu starten: Schlie\xC3\x9F"
+         "e es und starte es erneut, um auf Deutsch zu spielen."},
+        {6,
+         "Premi A per riavviare subito il gioco in italiano (ci\xC3\xB2 che non hai salvato andr\xC3\xA0 "
+         "perso), oppure la lingua cambier\xC3\xA0 al prossimo avvio del gioco.",
+         "Premi di nuovo A",
+         "Premi di nuovo A per riavviare subito il gioco in italiano. Ci\xC3\xB2 che non hai salvato "
+         "andr\xC3\xA0 perso.",
+         "Il gioco non \xC3\xA8 riuscito a riavviarsi: chiudilo e riaprilo per giocare in italiano."},
+    };
+    for (const LanguageText& t : texts)
+      if (t.id == id)
+        return t;
+    return texts[0];
+  }
+
+  const LanguageText& PickedLanguageText() const { return TextFor(kLanguageIds[values_[kLanguage]]); }
+  std::string LanguageHint() const {
+    if (!LanguagePending())
+      return Rows()[kLanguage].hint;
+    const LanguageText& t = PickedLanguageText();
+    return language_restart_failed_ ? t.failed : confirm_restart_ ? t.confirm_hint : t.restart_now;
   }
 
   // A row's current choice; Auto says what it picked here ("Auto (1440p)").
@@ -422,6 +531,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
   void Change(int delta) {
     if (selected_ >= kUpdate)
       return;
+    confirm_restart_ = false;
     const int count = int(Rows()[selected_].labels.size());
     values_[selected_] = (values_[selected_] + delta + count) % count;
     Apply(selected_);
@@ -485,6 +595,8 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
                         ImGui::IsKeyPressed(ImGuiKey_Space, false);
     const bool back = (pad.b && !last_.b) || (pad.combo && !last_.combo) ||
                       ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (up || down || left || right)
+      confirm_restart_ = false;
     if (up || down)
       confirm_update_ = false;
     if (up)
@@ -500,6 +612,8 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         Close();
       else if (selected_ == kUpdate)
         UpdateAction();
+      else if (selected_ == kLanguage)
+        LanguageAction();
       else
         Change(+1);
     }
@@ -602,7 +716,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         const bool hovered = ImGui::IsItemHovered();
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
           if (selected_ != i)
-            confirm_update_ = false;
+            confirm_update_ = confirm_restart_ = false;
           selected_ = i;
           if (i == kClose)
             Close();
@@ -612,7 +726,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
             Change(io.MousePos.x < p0.x + value_x + (inner - value_x) * 0.5f ? -1 : +1);
         } else if (hovered && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
           if (selected_ != i)
-            confirm_update_ = false;
+            confirm_update_ = confirm_restart_ = false;
           selected_ = i;
         }
         ImGui::PopID();
@@ -640,11 +754,13 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
                       ready ? accent : (sel ? IM_COL32(255, 255, 255, 255) : text), value.c_str());
           continue;
         }
-        const std::string value = ValueText(i);
+        const bool restart = i == kLanguage && LanguagePending();
+        const std::string value =
+            restart && confirm_restart_ ? std::string(PickedLanguageText().confirm_value) : ValueText(i);
         const float vw = ImGui::CalcTextSize(value.c_str()).x;
         const float mid = p0.x + value_x + (inner - value_x) * 0.5f;
-        dl->AddText(ImVec2(mid - vw * 0.5f, cy - fh * 0.5f), sel ? IM_COL32(255, 255, 255, 255) : text,
-                    value.c_str());
+        dl->AddText(ImVec2(mid - vw * 0.5f, cy - fh * 0.5f),
+                    restart ? accent : (sel ? IM_COL32(255, 255, 255, 255) : text), value.c_str());
         const ImU32 arrow = sel ? accent : IM_COL32(90, 96, 112, 255);
         const float ax = 9 * s, ay = 8 * s;
         const float lx = p0.x + value_x + 10 * s, rx = p1.x - 18 * s;
@@ -660,7 +776,8 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
       if (selected_ == kUpdate)
         ImGui::TextWrapped("%s", UpdateHint().c_str());
       else
-        ImGui::TextWrapped("%s", Rows()[selected_].hint);
+        ImGui::TextWrapped("%s", selected_ == kLanguage ? LanguageHint().c_str()
+                                                        : Rows()[selected_].hint);
       ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), hint_y + 3 * ImGui::GetTextLineHeightWithSpacing()));
       ImGui::PopTextWrapPos();
       ImGui::PopStyleColor();
@@ -696,6 +813,9 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
   Hooks hooks_;
   bool open_ = false, hold_ = false;
   bool confirm_update_ = false, restart_failed_ = false, notice_shown_ = false;
+  bool confirm_restart_ = false, language_restart_failed_ = false;
+  // The language the game started in (the setting is read when the game starts).
+  const int start_language_ = std::atoi(rex::cvar::GetFlagByName("user_language").c_str());
   Clock::time_point notice_until_;
   int selected_ = 0;
   int values_[kRows] = {};

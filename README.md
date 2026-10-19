@@ -54,8 +54,9 @@ game's own 60 fps mode, so everything plays at the right speed) and higher resol
   smeared hair, tattoos, ropes and the crowd) is off; the higher internal resolution smooths edges
   instead. `svr_edge_blur = true` in `svr2008.toml` brings the original look back.
 - **In-game settings menu:** F1, or Back + Start on a controller (Share + Options on PlayStation): resolution, graphics API,
-  fullscreen or window, 60 or 30 fps, screen shape, FPS counter, sound, keyboard controls, how
-  controllers map to players and CPU priority. Saved for next time.
+  fullscreen or window, 60 or 30 fps, screen shape, FPS counter, sound, **language** (English,
+  Spanish, German or Italian), keyboard controls, how controllers map to players and CPU
+  priority. Saved for next time.
 - **Updates in the game, when you want them:** a new version is announced at startup and installed
   from the settings menu only if you choose to. Your saves are kept and backed up first (see
   [Updating](#updating)).
@@ -90,7 +91,9 @@ Good to know:
 
 - **Settings:** press **F1** in game (or **Back + Start** on a controller, **Share + Options** on PlayStation) for the settings menu:
   resolution (Auto, 720p, 1440p, 4K), graphics API (Auto, Direct3D 12, Vulkan), fullscreen or
-  window, 60 or 30 fps, screen shape, FPS counter, sound, keyboard controls, **Controllers**
+  window, 60 or 30 fps, screen shape, FPS counter, sound, **Language** (English, Español, Deutsch,
+  Italiano: the game's text and menus; press A on it to restart into the new language; the
+  commentary stays in English), keyboard controls, **Controllers**
   (separate players, or every controller on player 1) and CPU priority. They are saved in `svr2008.toml`.
 - **"Windows protected your PC"**: the program isn't code-signed. Click *More info* and then
   *Run anyway*.

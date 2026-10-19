@@ -779,6 +779,44 @@ index a5e9088..27a023d 100644
          // Atrain spawns a thread 82437FD0 to call this in a tight loop forever.
          rex::thread::Sleep(std::chrono::milliseconds(10));
        }
+diff --git a/src/kernel/xam/xam_info.cpp b/src/kernel/xam/xam_info.cpp
+index 1fda053..cbe2b86 100644
+--- a/src/kernel/xam/xam_info.cpp
++++ b/src/kernel/xam/xam_info.cpp
+@@ -15,6 +15,7 @@
+ #include <rex/hook.h>
+ #include <rex/types.h>
+ #include <rex/string.h>
++#include <rex/system/flags.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/user_module.h>
+ #include <rex/system/xenumerator.h>
+@@ -183,19 +184,12 @@ u32 XGetGameRegion_entry() {
+ }
+ 
+ u32 XGetLanguage_entry() {
+-  auto desired_language = XLanguage::kEnglish;
+-
+-  // Switch the language based on game region.
+-  // TODO(benvanik): pull from xex header.
+-  uint32_t game_region = XEX_REGION_NTSCU;
+-  if (game_region & XEX_REGION_NTSCU) {
+-    desired_language = XLanguage::kEnglish;
+-  } else if (game_region & XEX_REGION_NTSCJ) {
+-    desired_language = XLanguage::kJapanese;
+-  }
+-  // Add more overrides?
+-
+-  return uint32_t(desired_language);
++  // The console's language setting, as XCONFIG_USER_LANGUAGE reports it. Games that ask here rather
++  // than through ExGetXConfigSetting (SvR 2008) otherwise always got English.
++  const uint32_t language = REXCVAR_GET(user_language);
++  if (language > uint32_t(XLanguage::kInvalid) && language < uint32_t(XLanguage::kMaxLanguages))
++    return language;
++  return uint32_t(XLanguage::kEnglish);
+ }
+ 
+ u32 XamGetCurrentTitleId_entry() {
 diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
 index c10694c..ffdaddc 100644
 --- a/src/system/runtime.cpp
