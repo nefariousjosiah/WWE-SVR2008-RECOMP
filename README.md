@@ -18,11 +18,22 @@ game's own 60 fps mode, so everything plays at the right speed) and higher resol
 > game, **F1** (or **Back + Start** on a controller, **View + Menu** on the Steam Deck) opens the
 > settings menu.
 
-![The in-game settings menu (F1, or Back + Start on a controller)](docs/settings-menu.png)
+> **Version 1.0, still updated.** The port gets regular updates, and bugs are fixed as they're
+> found and reported. If you run into a problem, please
+> [open an issue](https://github.com/nefariousjosiah/WWE-SVR2008-RECOMP/issues) with your graphics
+> card, `game.log` from the game's folder and a screenshot.
+
+<p align="center">
+  <img src="docs/settings-menu.png" width="520" alt="The in-game settings menu (F1, or Back + Start on a controller)">
+</p>
 
 ## Showcase
 
 <p align="center">
+  <img src="docs/showcase/super-rko.gif" width="480" alt="Randy Orton catches John Cena off the top rope with an RKO">
+  <img src="docs/showcase/batista-bomb.gif" width="480" alt="Batista hits the Batista Bomb on Rey Mysterio in the parking lot">
+  <img src="docs/showcase/garbage-truck.gif" width="480" alt="Batista slams Rey Mysterio's head in a garbage truck">
+  <img src="docs/showcase/tombstone.gif" width="480" alt="The Undertaker's Tombstone in a Buried Alive match: REST IN PEACE">
   <img src="docs/showcase/slam.gif" width="480" alt="Triple H lifts Randy Orton and drops him">
   <img src="docs/showcase/pedigree.gif" width="480" alt="Triple H hits the Pedigree on Randy Orton">
   <img src="docs/showcase/top-rope.gif" width="480" alt="Triple H comes off the top rope onto Randy Orton">
@@ -57,6 +68,10 @@ game's own 60 fps mode, so everything plays at the right speed) and higher resol
   fullscreen or window, 60 or 30 fps, screen shape, FPS counter, sound, **language** (English,
   Spanish, German or Italian), keyboard controls, how controllers map to players and CPU
   priority. Saved for next time.
+- **Play in your language:** English, Español, Deutsch or Italiano. The disc has these
+  translations, but the game only ever showed English; pick one under **Language** in the
+  settings menu and press A twice to restart straight into it. (The commentary is English
+  only, and the SvR 2008 disc has no French.)
 - **Updates in the game, when you want them:** a new version is announced at startup and installed
   from the settings menu only if you choose to. Your saves are kept and backed up first (see
   [Updating](#updating)).
@@ -248,9 +263,10 @@ sources, `tools/` build scripts, `docs/` the images on this page.
 - [re:Blue](https://github.com/zolaware/reblue) (Blue Dragon), the renderer this one is adapted
   from, with [plume](https://github.com/zolaware/plume) and
   [XenosRecomp](https://github.com/zolaware/reblue-XenosRecomp).
-- The settings menu: [Dear ImGui](https://github.com/ocornut/imgui) and the Roboto font;
+- The settings menu: [Dear ImGui](https://github.com/ocornut/imgui), with the Press Start 2P and
+  Roboto fonts;
   [SDL](https://libsdl.org) for controllers and sound.
-- [zstd](https://github.com/facebook/zstd); the Press Start 2P font.
+- [zstd](https://github.com/facebook/zstd).
 - Inside the runtime: [FFmpeg](https://ffmpeg.org) (audio),
   [libmspack](https://github.com/kyz/libmspack) and the other libraries the ReXGlue SDK uses.
 
