@@ -9,6 +9,8 @@
 
 #include "frame_stats.h"
 
+#include "core/memory_helpers.h"
+
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -60,6 +62,16 @@ bool SvrSkip30ModeHook() {
     REXLOG_INFO("[fps] game switched to 30 fps mode{}", skip ? "; kept at 60" : "");
   }
   return skip;
+}
+
+// Cutscene captions: sub_8226BC80 hands the caption display the cutscene's time (f1, at the bctrl
+// 0x8226BDD8), counted from the scene clock (sub_82293150: scene object +192), which goes up by one
+// every frame. The captions' start and end times are in 30 fps frames, so in the 60 fps mode every
+// caption came at half its time and stayed half as long. Hand it 30 fps frames.
+constexpr uint32_t kFrameRateMode = 0x82E6E458;  // +8: target fps (60/50/30/25)
+void SvrCaptionTimeHook(PPCRegister& f1) {
+  if (f1.f64 > 0 && bd::mem::load<uint32_t>(kFrameRateMode + 8) >= 50)
+    f1.f64 *= 0.5;
 }
 
 // Frame counter: SvrFrameSwapHook runs in the game's swap function (sub_8223A960) right before it
