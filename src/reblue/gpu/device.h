@@ -187,6 +187,11 @@ public:
   static void TrackResolveSource(u32 flags, GuestTexture *dst, u32 level = 0,
                                  u32 face = 0);
   static void ResolveRtToTexture(GuestTexture *dst);
+  // Copies an RGBA8 texture's level 0 back to the CPU: records the copy, submits the open list
+  // and waits for the GPU, so it stalls. For the rare texture the game reads with the CPU after
+  // a resolve. rows are row_bytes apart. False if the texture can't be read back.
+  static bool ReadBackTexture(GuestTexture *tex, std::vector<u8> &out, u32 &width,
+                              u32 &height, u32 &row_bytes);
 
   // The other in-flight list may still reference it. Freed by DrainSlot. Takes
   // state().mutex.

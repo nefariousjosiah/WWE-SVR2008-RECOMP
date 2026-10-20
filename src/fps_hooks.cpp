@@ -91,10 +91,15 @@ Clock::time_point frame_times[kFrameHistory];
 uint64_t frame_count = 0;
 }  // namespace
 
+void SvrTextEntryFrame();  // text_entry.cpp
+
 void SvrFrameSwapHook() {
-  std::lock_guard lock(frame_mutex);
-  frame_times[frame_count % kFrameHistory] = Clock::now();
-  ++frame_count;
+  {
+    std::lock_guard lock(frame_mutex);
+    frame_times[frame_count % kFrameHistory] = Clock::now();
+    ++frame_count;
+  }
+  SvrTextEntryFrame();
 }
 
 SvrFrameStats GetSvrFrameStats() {

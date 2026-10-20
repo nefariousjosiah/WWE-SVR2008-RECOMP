@@ -66,6 +66,11 @@ void ResolveEffectiveTargets(VideoState &s, GuestTexture *&rt,
     rt = nullptr;
   if (ds && !ds->texture)
     ds = nullptr;
+  // A depth buffer smaller than the colour target: SvR leaves the screen's bound (depth test off)
+  // while it draws an edited outfit into a 2048x1024 target. EDRAM has no such limit, but bound
+  // together on the host only their overlap is drawn, which cut the outfit to the screen's size.
+  if (rt && ds && (ds->width < rt->width || ds->height < rt->height))
+    ds = nullptr;
   if (!rt && !ds && s.back_buffer_surface && s.back_buffer_surface->texture) {
     rt = s.back_buffer_surface;
   }

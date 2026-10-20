@@ -35,6 +35,8 @@ REXCVAR_DECLARE(bool, svr_check_updates);
 REXCVAR_DECLARE(bool, svr_controllers_shared);
 REXCVAR_DECLARE(bool, svr_high_priority);
 
+void SvrTextEntryAttach(rex::ui::Window* window);  // text_entry.cpp: typing names on a keyboard
+
 #ifndef SVR_VERSION
 #define SVR_VERSION "dev"  // set by CMakeLists.txt (project VERSION)
 #endif
@@ -153,8 +155,10 @@ class Svr2008App : public rex::ReXApp {
 
   void OnPostSetup() override {
     // Replaces the SDK's "svr2008 [rexglue-<build>]" title set during window creation.
-    if (window())
+    if (window()) {
       window()->SetTitle(kWindowTitle);
+      SvrTextEntryAttach(window());
+    }
 #if defined(_WIN32)
     REXLOG_INFO("Graphics API: {}", svr::GraphicsApiDescription());
 #endif

@@ -30,7 +30,7 @@ index 1cbc506..1721b5c 100644
          ${CMAKE_CURRENT_SOURCE_DIR}/contrib/D3D12MemoryAllocator/include
      )
 diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
-index dcae4e3..2dba3af 100644
+index dcae4e3..b96e99c 100644
 --- a/plume_d3d12.cpp
 +++ b/plume_d3d12.cpp
 @@ -484,7 +484,8 @@ namespace plume {
@@ -43,3 +43,51 @@ index dcae4e3..2dba3af 100644
          default:
              assert(false && "Unknown heap type.");
              return D3D12_HEAP_TYPE_DEFAULT;
+@@ -2322,9 +2323,15 @@ namespace plume {
+ 
+         const D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
+         const D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
+-        setSamplePositions(dstLocation.texture);
++        // A readback copies into a buffer: only a texture destination has sample positions.
++        const bool dstIsTexture = (dstLocation.type == RenderTextureCopyType::SUBRESOURCE) && (dstLocation.texture != nullptr);
++        if (dstIsTexture) {
++            setSamplePositions(dstLocation.texture);
++        }
+         d3d->CopyTextureRegion(&copyDstLocation, dstX, dstY, dstZ, &copySrcLocation, (srcBox != nullptr) ? &copyBox : nullptr);
+-        resetSamplePositions();
++        if (dstIsTexture) {
++            resetSamplePositions();
++        }
+     }
+ 
+     void D3D12CommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 11abda8..fd51d4d 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -3250,6 +3250,25 @@ namespace plume {
+             imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+             vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+         }
++        else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) && (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
++            // Texture -> buffer (readback): the mirror of the case above.
++            assert(srcTexture != nullptr);
++            assert(dstBuffer != nullptr);
++
++            const uint32_t blockWidth = RenderFormatBlockWidth(srcTexture->desc.format);
++            VkBufferImageCopy imageCopy = {};
++            imageCopy.bufferOffset = dstLocation.placedFootprint.offset;
++            imageCopy.bufferRowLength = ((dstLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.bufferImageHeight = ((dstLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.imageSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
++            imageCopy.imageSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
++            imageCopy.imageSubresource.layerCount = 1;
++            imageCopy.imageSubresource.mipLevel = srcLocation.subresource.mipLevel;
++            imageCopy.imageExtent.width = dstLocation.placedFootprint.width;
++            imageCopy.imageExtent.height = dstLocation.placedFootprint.height;
++            imageCopy.imageExtent.depth = dstLocation.placedFootprint.depth;
++            vkCmdCopyImageToBuffer(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstBuffer->vk, 1, &imageCopy);
++        }
+         else {
+             VkImageCopy imageCopy = {};
+             imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);

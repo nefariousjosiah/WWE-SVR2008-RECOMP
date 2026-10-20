@@ -19,6 +19,9 @@ struct GuestVertexDeclaration;
 GuestTexture *SvrResolveSurface(u32 surface_va);
 // Guest texture that the GPU writes (Resolve destination, front buffer) -> host texture.
 GuestTexture *SvrResolveTarget(u32 texture_va);
+// After a resolve into texture_va (host texture dst): copies the result back into guest memory,
+// for the game reading it with the CPU, unless the texture is resolved every frame.
+void SvrWriteBackResolve(u32 texture_va, GuestTexture *dst);
 // Guest texture bound for sampling -> host texture (a resolve target, else a mirror).
 GuestTexture *SvrResolveTexture(u32 texture_va);
 // Called once per presented frame (mirror checks are per frame).

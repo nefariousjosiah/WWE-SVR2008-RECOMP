@@ -57,6 +57,13 @@ address = 0x8226BD64
 registers = ["r11"]
 after_instruction = true
 
+# Text entry (Create-a-Superstar name...): sub_824C66D0 just polled the keyboard, as it does every
+# frame the entry is open. src/text_entry.cpp: on the Steam Deck, keys aren't controller buttons then.
+[[midasm_hook]]
+name = "SvrTextEntryPollHook"
+address = 0x824C6708
+registers = []
+
 # Branch targets the analyzer leaves outside any function.
 [functions]
 0x8289C9A0 = { size = 4 }   # lone thunk: b 0x826DEC38

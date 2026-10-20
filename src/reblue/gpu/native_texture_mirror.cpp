@@ -781,6 +781,50 @@ bool GetNativeMirrorSource(u32 guest_va, NativeMirrorSource &out) {
   return out.base != nullptr;
 }
 
+bool WriteGuestTextureRGBA8(u32 guest_va, const u8 *rgba, u32 width, u32 height,
+                            u32 row_bytes) {
+  xe::xe_gpu_texture_fetch_t fetch;
+  if (!rgba || !ReadFetch(guest_va, fetch) || fetch.type != xe::FetchConstantType::kTexture ||
+      fetch.dimension != xe::DataDimension::k2DOrStacked ||
+      (fetch.format != xe::TextureFormat::k_8_8_8_8 &&
+       fetch.format != xe::TextureFormat::k_8_8_8_8_A))
+    return false;
+  const MirrorLayout L = MakeLayout(fetch);
+  if (!L.width || !L.height || width < L.width || height < L.height)
+    return false;
+  auto *dst = const_cast<u8 *>(FetchMemory<u8>(fetch.base_address << 12));
+  if (!dst)
+    return false;
+  const u32 sx = width / L.width, sy = height / L.height;
+  const u32 n = sx * sy;
+  for (u32 y = 0; y < L.height; ++y) {
+    for (u32 x = 0; x < L.width; ++x) {
+      const i32 so = BaseBlockOffset(L, L.pack_off_x + int(x), L.pack_off_y + int(y));
+      if (so < 0 || u32(so) + 4u > L.source_bytes)
+        continue;
+      u32 sum[4] = {};
+      for (u32 j = 0; j < sy; ++j) {
+        const u8 *row = rgba + size_t(y * sy + j) * row_bytes + size_t(x * sx) * 4u;
+        for (u32 i = 0; i < sx; ++i)
+          for (u32 c = 0; c < 4; ++c)
+            sum[c] += row[i * 4u + c];
+      }
+      // The fetch swizzle says which stored component each sampled channel comes from (an
+      // A8R8G8B8 texture stores B,G,R,A in GPU byte order); put each channel there, so the
+      // memory holds what the GPU would have resolved and the CPU reads the colours right.
+      u8 texel[4] = {0, 0, 0, 255};
+      for (u32 c = 0; c < 4; ++c) {
+        const u32 from = (fetch.swizzle >> (3 * c)) & 7u;
+        if (from < 4)
+          texel[from] = u8((sum[c] + n / 2) / n);
+      }
+      // The mirror path swaps guest -> host with this; every swap mode is its own inverse.
+      tc::CopySwapBlock(L.endian, dst + so, texel, 4u);
+    }
+  }
+  return true;
+}
+
 GuestTexture *ResolveGuestTexture(u32 guest_va) {
   if (!guest_va)
     return nullptr;

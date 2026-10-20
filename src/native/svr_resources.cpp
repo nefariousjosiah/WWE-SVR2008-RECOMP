@@ -203,6 +203,58 @@ GuestTexture *SvrResolveTarget(u32 texture_va) {
   return host;
 }
 
+// The Xbox 360 resolves into main memory, and SvR reads some of it with the CPU: the
+// Create-a-Superstar photo is drawn on the GPU, resolved, then read by the CPU from that memory
+// (SvR 2010 does the same with edited outfits). Here a resolve only writes the host texture, so
+// the CPU found whatever the memory held before (the photo came out as scrambled pixels). The
+// result is read back into guest memory, which stalls for the GPU; a texture resolved again and
+// again (shadows, the screen, effects redrawn every few frames) is skipped once seen in several
+// frames running, so the wait happens for one-off captures and while loading, not during play.
+void SvrWriteBackResolve(u32 texture_va, GuestTexture *dst) {
+  struct Seen {
+    u32 desc = 0;
+    u64 last_frame = 0;
+    u32 streak = 0;
+  };
+  constexpr u32 kPerFrameStreak = 3;  // resolved in this many frames running: every frame
+  // Frames apart that still count as running: 2008 redraws some screen-size targets every 5 frames
+  // or so (60 -> 48 fps when each was read back); a one-off capture isn't repeated within this.
+  constexpr u64 kFrameGap = 30;
+  static std::unordered_map<u32, Seen> seen;  // render thread only
+  rex::graphics::xenos::xe_gpu_texture_fetch_t fetch{};
+  if (!dst || !ReadFetch(texture_va, fetch) ||
+      (fetch.format != rex::graphics::xenos::TextureFormat::k_8_8_8_8 &&
+       fetch.format != rex::graphics::xenos::TextureFormat::k_8_8_8_8_A))
+    return;
+  const u64 frame = SvrFrameIndex();
+  Seen &s = seen[texture_va];
+  const bool first = s.desc != fetch.dword_1 || s.last_frame == 0;
+  if (first) {
+    s = Seen{fetch.dword_1, frame, 0};
+  } else if (s.last_frame != frame) {
+    s.streak = s.last_frame + kFrameGap >= frame ? s.streak + 1 : 0;
+    s.last_frame = frame;
+  }
+  if (s.streak >= kPerFrameStreak)
+    return;
+  const auto start = std::chrono::steady_clock::now();
+  std::vector<u8> pixels;
+  u32 w = 0, h = 0, row = 0;
+  const bool ok = Video::ReadBackTexture(dst, pixels, w, h, row) &&
+                  WriteGuestTextureRGBA8(texture_va, pixels.data(), w, h, row);
+  const double ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  static u32 repeats = 0;  // render thread only
+  if (first)
+    BD_INFO("SvR resolve 0x{:08X}: {}x{} swizzle 0x{:03X} endian {} copied back to guest memory "
+            "{} ({:.1f} ms)",
+            texture_va, fetch.size_2d.width + 1, fetch.size_2d.height + 1, u32(fetch.swizzle),
+            u32(fetch.endianness), ok ? "ok" : "FAILED", ms);
+  else if (++repeats <= 20 || repeats % 100 == 0)
+    BD_INFO("SvR resolve 0x{:08X} copied back again (streak {}, {:.1f} ms; {} repeats)", texture_va,
+            s.streak, ms, repeats);
+}
+
 namespace {
 
 std::shared_mutex g_object_mutex;

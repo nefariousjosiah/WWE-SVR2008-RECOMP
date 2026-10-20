@@ -47,6 +47,12 @@ struct NativeMirrorSource {
 };
 bool GetNativeMirrorSource(u32 guest_va, NativeMirrorSource &out);
 
+// Writes an RGBA8 image (a GPU-written texture read back, at the render scale) into the guest
+// memory the texture's fetch constant names, in the guest's own layout (tiling, endian), each
+// guest texel the average of its scale x scale host texels. Only k_8_8_8_8 base levels.
+bool WriteGuestTextureRGBA8(u32 guest_va, const u8 *rgba, u32 width, u32 height,
+                            u32 row_bytes);
+
 // One live native texture: its D3DTexture VA and the allocation's sequence
 // number. The sequence is what a caller tracking per-instance state keys on,
 // since a freed texture's VA can be reused by the next allocation.
