@@ -41,6 +41,10 @@
 REXCVAR_DEFINE_BOOL(svr_edge_blur, false, "SvR",
                     "SvR 2008's own edge-blur filter (the console's anti-aliasing): off keeps the image "
                     "sharp; the higher internal resolution already smooths edges");
+// Applied in gpu/constant_buffers.cpp (the depth-of-field factor of the end-of-frame composites).
+REXCVAR_DEFINE_BOOL(svr_depth_of_field, false, "SvR",
+                    "SvR 2008's depth of field, which blurs the crowd and arena behind the wrestlers: "
+                    "off keeps the whole picture sharp");
 #endif
 #include "svr_hook.h"
 #include "svr_resources.h"

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <plume_render_interface_builders.h>
+#include <rex/cvar.h>
 #include <rex/graphics/xenos.h>
 #include <rex/runtime.h>
 #include <rex/types.h>
@@ -30,6 +31,11 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
+
+#if defined(SVR_NATIVE_RENDERER)
+REXCVAR_DECLARE(bool, svr_edge_blur);       // gpu/hooks/draw.cpp
+REXCVAR_DECLARE(bool, svr_depth_of_field);  // gpu/hooks/draw.cpp
 #endif
 
 namespace bd::gpu {
@@ -92,7 +98,7 @@ u32 SamplerFieldsKey(const u32 fc[6]) {
 struct StageConstantCache {
   alignas(64) u8 raw[256 * 16];
   bool valid = false;
-  bool pinned = false;
+  u64 pin = 0;  // which registers the upload overrode (0: none); part of the match
 };
 
 struct UploadState {
@@ -300,22 +306,70 @@ void PinScreenUVScaleReg(u8 *block) {
   }
 }
 
+#if defined(SVR_NATIVE_RENDERER)
+// SvR 2008's depth of field: its end-of-frame composites blend each pixel toward a blurred
+// quarter-size copy of the frame by depth (the factor comes from g_f4DOFCalcInfo and
+// g_f4DOFCalcInfo2; up to 0.55 in matches), which softens the crowd and the arena behind the
+// wrestlers. With g_f4DOFCalcInfo and g_f4DOFCalcInfo2.z (the factor's floor) zero, every variant
+// keeps the sharp frame. The match composite also runs the edge-blur filter (svr_edge_blur,
+// hooks/draw.cpp) over the 3x3 taps g_f2SampleOffsets: zero offsets make every tap the pixel
+// itself, so nothing reads as an edge. Registers from each shader's constant table.
+struct SvrPostShader {
+  u64 hash;
+  u8 dof_reg;      // g_f4DOFCalcInfo; g_f4DOFCalcInfo2 is the next register
+  u8 offsets_reg;  // g_f2SampleOffsets, 0: none
+};
+constexpr SvrPostShader kSvrPostShaders[] = {
+    {0x07B19DE4D20E66C6ull, 13, 18},  // the match composite: edge blur, depth of field, bloom
+    {0xF186A60B65C7C686ull, 13, 0},  {0xCB7943BE1FD89EC4ull, 13, 0},
+    {0x1EF0E08FFC584AA1ull, 13, 0},  {0xE46003160C512987ull, 13, 0},
+    {0x1F30F417D8BAFC3Dull, 13, 0},  {0xFE75275397BC63C3ull, 12, 0},
+    {0x58B3B4BB16F7581Dull, 12, 0},
+};
+
+// The current pixel shader's entry when one of its effects is turned off, else null.
+const SvrPostShader *SvrPostOverride() {
+  const bool dof = REXCVAR_GET(svr_depth_of_field), edge = REXCVAR_GET(svr_edge_blur);
+  if (dof && edge)
+    return nullptr;
+  auto *ps = bd::gpu::state().pipelineState.pixelShader;
+  if (!ps || !ps->shaderCacheEntry)
+    return nullptr;
+  for (const SvrPostShader &e : kSvrPostShaders)
+    if (e.hash == ps->shaderCacheEntry->hash)
+      return (!dof || e.offsets_reg) ? &e : nullptr;
+  return nullptr;
+}
+
+void PinSvrPostConstants(u8 *block, const SvrPostShader &e) {
+  if (!REXCVAR_GET(svr_depth_of_field)) {
+    auto *info = reinterpret_cast<float *>(block + e.dof_reg * 16);
+    info[0] = info[1] = info[2] = info[3] = 0.0f;
+    info[4 + 2] = 0.0f;  // g_f4DOFCalcInfo2.z
+  }
+  if (!REXCVAR_GET(svr_edge_blur) && e.offsets_reg) {
+    auto *offsets = reinterpret_cast<float *>(block + e.offsets_reg * 16);
+    offsets[0] = offsets[1] = 0.0f;
+  }
+}
+#endif
+
 namespace {
 // True when the guest block equals the last one uploaded on this command list
 // (the caller keeps that binding); otherwise remembers it for next time.
 // (The D3D runtime's own dirty masks, m_Mask[0]/[1], can't replace this compare: over a match
 // about 1.3% of draws had new constants with the mask clean.)
-bool SameAsLastUpload(StageConstantCache &cache, u32 guest_va, bool pinned) {
+bool SameAsLastUpload(StageConstantCache &cache, u32 guest_va, u64 pin) {
   const auto *src = bd::mem::at<const u8>(guest_va);
   if (!src) {
     cache.valid = false;
     return false;
   }
-  if (cache.valid && cache.pinned == pinned &&
+  if (cache.valid && cache.pin == pin &&
       std::memcmp(cache.raw, src, kConstantBlockBytes) == 0)
     return true;
   std::memcpy(cache.raw, src, kConstantBlockBytes);
-  cache.pinned = pinned;
+  cache.pin = pin;
   cache.valid = true;
   return false;
 }
@@ -349,7 +403,13 @@ ConstantAllocation UploadPixelShaderConstants(u32 device_guest) {
   if (!device_guest)
     return {};
   const u32 va = device_guest + offsetof(D3DDevice, psFloatConstants);
-  if (SameAsLastUpload(s.psConstants, va, PinsScreenUVScale()))
+  u64 pin = PinsScreenUVScale() ? kBDBlurPSHash : 0;
+#if defined(SVR_NATIVE_RENDERER)
+  const SvrPostShader *post = SvrPostOverride();
+  if (post)
+    pin = post->hash ^ (REXCVAR_GET(svr_depth_of_field) ? 1 : 0) ^ (REXCVAR_GET(svr_edge_blur) ? 2 : 0);
+#endif
+  if (SameAsLastUpload(s.psConstants, va, pin))
     return {};
   auto alloc = Allocate(s, kConstantBlockBytes, kCBVAlignment);
   if (!alloc.memory) {
@@ -358,6 +418,10 @@ ConstantAllocation UploadPixelShaderConstants(u32 device_guest) {
   }
   CopyByteSwap32FlushNaN(alloc.memory, va, kConstantBlockBytes);
   PinScreenUVScaleReg(alloc.memory);
+#if defined(SVR_NATIVE_RENDERER)
+  if (post)
+    PinSvrPostConstants(alloc.memory, *post);
+#endif
   return alloc;
 }
 

@@ -35,7 +35,7 @@ to run well on today's hardware.
   Direct3D 12 on Windows and Vulkan on Linux and the Steam Deck.
 - **60 fps,** using the game's own 60 fps mode so everything plays at the right speed.
 - **Up to 4K:** 1440p on 1080p and 1440p screens, 4K on 4K screens, 720p on the Steam Deck. The
-  console's edge blur is off, for a sharper image.
+  console's edge blur and its background blur (depth of field) are off, for a sharp image.
 - **Smooth on lower-end PCs too:** no first-time stutters, and a GTX 1060 with an i7-8700 holds 60 fps.
 - **Play in your language:** English, Español, Deutsch or Italiano. The disc has these translations,
   but the game only ever showed English.
