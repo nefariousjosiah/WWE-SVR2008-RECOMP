@@ -9,8 +9,6 @@
 
 #include "frame_stats.h"
 
-#include "core/memory_helpers.h"
-
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -64,15 +62,24 @@ bool SvrSkip30ModeHook() {
   return skip;
 }
 
-// Cutscene captions: sub_8226BC80 hands the caption display the cutscene's time (f1, at the bctrl
-// 0x8226BDD8), counted from the scene clock (sub_82293150: scene object +192), which goes up by one
-// every frame. The captions' start and end times are in 30 fps frames, so in the 60 fps mode every
-// caption came at half its time and stayed half as long. Hand it 30 fps frames.
-constexpr uint32_t kFrameRateMode = 0x82E6E458;  // +8: target fps (60/50/30/25)
-void SvrCaptionTimeHook(PPCRegister& f1) {
-  if (f1.f64 > 0 && bd::mem::load<uint32_t>(kFrameRateMode + 8) >= 50)
-    f1.f64 *= 0.5;
+// Cutscene captions. The caption manager (sub_8226BC80) hands the caption display the cutscene's
+// time in 60ths of a second from one of two timers: the scene clock (sub_82293150: scene object
+// +192), or, for lines voiced clip by clip, its own count (+552, stepped by the frame-rate struct's
+// +56), where each clip's captions are timed from the moment the clip starts. The display's update
+// (sub_82261650) and segment (sub_82261748) code, and the clip start handed to it, turn caption
+// times into 60ths with 60 / target fps, which is right only at 30 fps: the scene data's times are
+// 30 fps frames, so in the 60 fps mode every caption came at half its time and left early. Handed
+// 30 (25) at those loads of the target fps, the caption code works out every time as at 30 fps.
+// (Halving the time handed to the display instead, as v1.0.7 did, put the clip-by-clip captions
+// at half speed against their clip starts: after the first, most never showed.)
+static void SvrCaptionFps(PPCRegister& fps) {
+  if (fps.u32 >= 50)
+    fps.u64 = fps.u32 / 2;
 }
+void SvrCaptionFpsShowHook(PPCRegister& r30) { SvrCaptionFps(r30); }
+void SvrCaptionFpsHideHook(PPCRegister& r31) { SvrCaptionFps(r31); }
+void SvrCaptionFpsSegmentHook(PPCRegister& r11) { SvrCaptionFps(r11); }
+void SvrCaptionFpsStartHook(PPCRegister& r11) { SvrCaptionFps(r11); }
 
 // Frame counter: SvrFrameSwapHook runs in the game's swap function (sub_8223A960) right before it
 // calls VdSwap at 0x8223ABAC, once per presented frame.

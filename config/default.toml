@@ -28,12 +28,34 @@ name = "SvrFrameSwapHook"
 address = 0x8223ABAC
 registers = []
 
-# Cutscene captions (sub_8226BC80) about to get the cutscene's time in f1, counted in frames:
-# turned into 30 fps frames, which the captions are timed in (fps_hooks.cpp).
+# Cutscene captions (src/fps_hooks.cpp): the caption code's loads of the target fps (frame-rate
+# struct +8, 60 / fps turns caption times into 60ths) see 30 in the 60 fps mode.
+# Caption display update (sub_82261650): show check, then hide check.
 [[midasm_hook]]
-name = "SvrCaptionTimeHook"
-address = 0x8226BDD8
-registers = ["f1"]
+name = "SvrCaptionFpsShowHook"
+address = 0x822616F0
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "SvrCaptionFpsHideHook"
+address = 0x822616A4
+registers = ["r31"]
+after_instruction = true
+
+# Caption display segment (sub_82261748): times of a voice clip's captions, from the clip's start.
+[[midasm_hook]]
+name = "SvrCaptionFpsSegmentHook"
+address = 0x82261818
+registers = ["r11"]
+after_instruction = true
+
+# Caption manager (sub_8226BC80): the clip start it hands the display.
+[[midasm_hook]]
+name = "SvrCaptionFpsStartHook"
+address = 0x8226BD64
+registers = ["r11"]
+after_instruction = true
 
 # Branch targets the analyzer leaves outside any function.
 [functions]
