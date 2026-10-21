@@ -49,7 +49,7 @@ inline thread_local bool t_overlay_reads_pad = false;
 
 #if defined(SVR_NATIVE_RENDERER)
 namespace bd::gpu {
-uint32_t SvrAutoRenderScale();  // src/native/svr_resources.h
+uint32_t SvrAutoRenderHeight();  // src/native/svr_resources.h
 void SvrDrawLogNextFrame();     // src/native/svr_draw_log.h
 }
 #endif
@@ -295,8 +295,8 @@ class Svr2008App : public rex::ReXApp {
     hooks.set_high_priority = [](bool on) { SvrSetHighPriority(on); };
 #if defined(SVR_NATIVE_RENDERER)
     hooks.auto_resolution = [] {
-      static constexpr const char* kNames[] = {"720p", "720p", "1440p", "4K", "2880p"};
-      return std::string(kNames[std::min(bd::gpu::SvrAutoRenderScale(), 4u)]);
+      const uint32_t h = bd::gpu::SvrAutoRenderHeight();
+      return h == 2160 ? std::string("4K") : h == 4320 ? std::string("8K") : std::to_string(h) + "p";
     };
 #endif
 #if defined(_WIN32)

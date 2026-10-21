@@ -111,6 +111,8 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     kDisplay,
     kFrameRate,
     kShape,
+    kEdgeBlur,
+    kDepthOfField,
     kCounter,
     kSound,
     kLanguage,
@@ -135,11 +137,13 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
 
   const std::vector<Row>& Rows() const {
     static const std::vector<Row> rows = {
-        {"Resolution", {"Auto (recommended)", "720p (original)", "1440p", "4K"},
+        {"Resolution",
+         {"Auto (recommended)", "480p (low-end PCs)", "720p (original)", "1080p", "1440p", "4K",
+          "8K"},
          "The game renders at this resolution and scales it to your screen: higher is smoother and "
          "sharper. Auto picks 1440p on 1080p/1440p screens, 4K on 4K screens, 720p on Steam Deck and "
-         "laptops' built-in graphics. "
-         "Applies the next time you start the game."},
+         "laptops' built-in graphics. 480p helps weak graphics cards; 8K needs a top-end one with "
+         "lots of video memory. Applies the next time you start the game."},
         {"Graphics API", {"Auto (recommended)", "Direct3D 12", "Vulkan"},
          "Auto draws with Direct3D 12 on Windows and Vulkan on Steam Deck / Linux. If the game "
          "looks wrong or runs badly, try the other one. Applies the next time you start the game."},
@@ -150,6 +154,12 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         {"Screen shape", {"16:9 (correct)", "Stretch to fill"},
          "Matters on 16:10 screens like the Steam Deck: 16:9 keeps thin bars, stretch fills the "
          "screen."},
+        {"Edge blur", {"Off (sharp)", "On (original)"},
+         "The game's own anti-aliasing blurs every edge, and more so above 720p. Off keeps the "
+         "picture sharp; On is how the console looked."},
+        {"Background blur", {"Off (sharp)", "On (original)"},
+         "Depth of field: the game blurs the crowd and the arena behind the wrestlers. Off keeps "
+         "everything sharp; On is how the console looked."},
         {"FPS counter", {"Show", "Hide"}, "The frame rate in the corner. F2 also shows or hides it."},
         {"Sound", {"On", "Muted"}, "Mute all of the game's sound."},
         // The languages on the disc (no French on this one; src/language.cpp). UTF-8 escapes: the
@@ -179,13 +189,15 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
   void Open() {
     open_ = true;
     selected_ = 0;
-    values_[kResolution] = std::clamp(std::atoi(Get("svr_render_scale").c_str()), 0, 3);
+    values_[kResolution] = ResolutionRow(std::atoi(Get("svr_render_scale").c_str()));
     std::string api = Get("svr_graphics_api");
     std::erase(api, '"');
     values_[kGraphicsApi] = api == "d3d12" ? 1 : api == "vulkan" ? 2 : 0;
     values_[kDisplay] = hooks_.is_fullscreen && hooks_.is_fullscreen() ? 0 : 1;
     values_[kFrameRate] = Get("svr_60fps") == "true" ? 0 : 1;
     values_[kShape] = Get("bd_aspect_ratio") == "6" ? 1 : 0;
+    values_[kEdgeBlur] = Get("svr_edge_blur") == "true" ? 1 : 0;
+    values_[kDepthOfField] = Get("svr_depth_of_field") == "true" ? 1 : 0;
     values_[kCounter] = hooks_.fps_counter_on && hooks_.fps_counter_on() ? 0 : 1;
     values_[kSound] = Get("audio_mute") == "true" ? 1 : 0;
     values_[kLanguage] = LanguageRow(std::atoi(Get("user_language").c_str()));
@@ -202,6 +214,22 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
 
   static std::string Get(const char* name) { return rex::cvar::GetFlagByName(name); }
 
+  // svr_render_scale for each Resolution choice: a multiple of 720p, or a height (480, 1080).
+  static constexpr int kResolutionValues[] = {0, 480, 1, 1080, 2, 3, 6};
+  static int ResolutionRow(int value) {
+    const int height = value <= 0 ? 0 : value <= 8 ? 720 * value : value;
+    int best = 0;
+    for (int i = 1; i < int(std::size(kResolutionValues)); ++i) {
+      const int v = kResolutionValues[i];
+      const int h = v <= 8 ? 720 * v : v;
+      const int b = kResolutionValues[best] <= 8 ? 720 * kResolutionValues[best]
+                                                 : kResolutionValues[best];
+      if (height && (best == 0 || std::abs(h - height) < std::abs(b - height)))
+        best = i;
+    }
+    return best;  // 0 (Auto) when unset
+  }
+
   // Xbox 360 language IDs, in the order of the Language row: English, Spanish, German, Italian.
   static constexpr int kLanguageIds[] = {1, 5, 3, 6};
   static int LanguageRow(int id) {
@@ -215,7 +243,13 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     const int v = values_[row];
     switch (row) {
       case kResolution:
-        Set("svr_render_scale", std::to_string(v));
+        Set("svr_render_scale", std::to_string(kResolutionValues[v]));
+        break;
+      case kEdgeBlur:
+        Set("svr_edge_blur", v == 1 ? "true" : "false");
+        break;
+      case kDepthOfField:
+        Set("svr_depth_of_field", v == 1 ? "true" : "false");
         break;
       case kGraphicsApi: {
         // A string setting: quoted in the toml file.
@@ -695,7 +729,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
       ImGui::PopFont();
       ImGui::Dummy(ImVec2(0, 12 * s));
 
-      const float row_h = 44 * s;
+      const float row_h = 40 * s;
       const float inner = ImGui::GetContentRegionAvail().x;
       const float value_x = 340 * s;
       // After the first press on Update: what the update changes, in place of the other rows,

@@ -790,22 +790,35 @@ bool WriteGuestTextureRGBA8(u32 guest_va, const u8 *rgba, u32 width, u32 height,
        fetch.format != xe::TextureFormat::k_8_8_8_8_A))
     return false;
   const MirrorLayout L = MakeLayout(fetch);
-  if (!L.width || !L.height || width < L.width || height < L.height)
+  if (!L.width || !L.height || !width || !height)
     return false;
   auto *dst = const_cast<u8 *>(FetchMemory<u8>(fetch.base_address << 12));
   if (!dst)
     return false;
-  const u32 sx = width / L.width, sy = height / L.height;
-  const u32 n = sx * sy;
+  // Each guest texel averages the host pixels that cover it: [x * width / L.width, (x + 1) * ...).
+  // The internal resolution needn't be a whole multiple of the guest's (1080p is 1.5x, 480p 2/3x):
+  // a span is at least one pixel, so below 1x each texel takes the nearest pixel.
+  auto span = [](u32 i, u32 host, u32 guest, u32 &first, u32 &count) {
+    first = u32(u64(i) * host / guest);
+    const u32 end = u32(u64(i + 1) * host / guest);
+    count = std::max(1u, end - first);
+    first = std::min(first, host - 1);
+    count = std::min(count, host - first);
+  };
   for (u32 y = 0; y < L.height; ++y) {
+    u32 y0, ny;
+    span(y, height, L.height, y0, ny);
     for (u32 x = 0; x < L.width; ++x) {
       const i32 so = BaseBlockOffset(L, L.pack_off_x + int(x), L.pack_off_y + int(y));
       if (so < 0 || u32(so) + 4u > L.source_bytes)
         continue;
+      u32 x0, nx;
+      span(x, width, L.width, x0, nx);
+      const u32 n = nx * ny;
       u32 sum[4] = {};
-      for (u32 j = 0; j < sy; ++j) {
-        const u8 *row = rgba + size_t(y * sy + j) * row_bytes + size_t(x * sx) * 4u;
-        for (u32 i = 0; i < sx; ++i)
+      for (u32 j = 0; j < ny; ++j) {
+        const u8 *row = rgba + size_t(y0 + j) * row_bytes + size_t(x0) * 4u;
+        for (u32 i = 0; i < nx; ++i)
           for (u32 c = 0; c < 4; ++c)
             sum[c] += row[i * 4u + c];
       }

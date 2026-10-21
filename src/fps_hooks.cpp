@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <mutex>
 
-REXCVAR_DEFINE_BOOL(svr_60fps, false, "Game",
+REXCVAR_DEFINE_BOOL(svr_60fps, true, "Game",
                     "Keep the game's frame-rate mode at 60 (50 PAL) instead of dropping to 30 (25) "
                     "in matches and cutscenes; game timing follows the mode");
 

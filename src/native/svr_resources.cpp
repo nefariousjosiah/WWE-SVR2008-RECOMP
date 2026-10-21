@@ -35,8 +35,9 @@ bool SvrOnSteamDeck();
 
 REXCVAR_DEFINE_INT32(svr_render_scale, 0, "SvR",
                      "Internal resolution: 1 = 720p (original), 2 = 1440p, 3 = 4K (2160p), "
-                     "4 = 2880p. 0 = auto: from the display (1440p on 1080p/1440p screens, 4K on "
-                     "4K screens), 720p on Steam Deck and on built-in (laptop) graphics");
+                     "6 = 8K (4320p), or a height: 480 (low-end PCs), 1080. 0 = auto: from the "
+                     "display (1440p on 1080p/1440p screens, 4K on 4K screens), 720p on Steam "
+                     "Deck and on built-in (laptop) graphics");
 
 namespace bd::gpu {
 
@@ -107,12 +108,12 @@ bool OnBuiltInGraphics() {
                     device->getCapabilities().uma);
 }
 
-u32 SvrAutoRenderScale() {
+u32 SvrAutoRenderHeight() {
   static std::atomic<u32> s_auto{0};
-  if (const u32 scale = s_auto.load(std::memory_order_relaxed))
-    return scale;
+  if (const u32 height = s_auto.load(std::memory_order_relaxed))
+    return height;
   if (!Video::HostDevice())
-    return 1;  // not decided before the graphics device exists
+    return 720;  // not decided before the graphics device exists
   u32 scale = 1;
   if (OnBuiltInGraphics()) {
     BD_INFO("SvR native: built-in graphics, auto resolution is 720p");
@@ -128,22 +129,33 @@ u32 SvrAutoRenderScale() {
     if (h)
       scale = std::clamp(u32((h + 360u) / 720u), 1u, 4u);
   }
-  s_auto.store(scale, std::memory_order_relaxed);
-  return scale;
+  s_auto.store(720 * scale, std::memory_order_relaxed);
+  return 720 * scale;
 }
 
-u32 SvrRenderScale() {
-  static std::atomic<u32> s_scale{0};
-  if (const u32 scale = s_scale.load(std::memory_order_relaxed))
-    return scale;
+u32 SvrRenderHeight() {
+  static std::atomic<u32> s_height{0};
+  if (const u32 height = s_height.load(std::memory_order_relaxed))
+    return height;
+  // svr_render_scale: a multiple of 720p (1..8; 6 = 8K) or a height (480, 1080...).
   const int configured = REXCVAR_GET(svr_render_scale);
-  const u32 scale = configured > 0 ? u32(std::min(configured, 4)) : SvrAutoRenderScale();
+  u32 height = configured <= 0  ? SvrAutoRenderHeight()
+               : configured <= 8 ? 720u * u32(configured)
+                                 : u32(std::clamp(configured, 360, 4320));
+  height &= ~1u;  // even, so half sizes stay whole
   u32 expected = 0;
-  if (s_scale.compare_exchange_strong(expected, scale)) {
-    BD_INFO("SvR native: internal resolution {}x{} ({}x)", 1280 * scale, 720 * scale, scale);
-    return scale;
+  if (s_height.compare_exchange_strong(expected, height)) {
+    BD_INFO("SvR native: internal resolution {}x{} ({:.3g}x)", SvrScaled(1280), height,
+            height / 720.0);
+    return height;
   }
   return expected;
+}
+
+float SvrRenderScale() { return float(SvrRenderHeight()) / 720.0f; }
+
+u32 SvrScaled(u32 guest) {
+  return u32((u64(guest) * SvrRenderHeight() + 360u) / 720u);
 }
 
 GuestTexture *SvrResolveSurface(u32 surface_va) {
@@ -166,9 +178,8 @@ GuestTexture *SvrResolveSurface(u32 surface_va) {
   }
   const u32 width = (bits >> 18) + 1;
   const u32 height = ((bits >> 3) & 0x7FFF) + 1;
-  const u32 scale = SvrRenderScale();
   SvrDiagTimer create(SvrDiag::kTargetCreate);
-  GuestTexture *host = SvrCreateHostSurface(width * scale, height * scale, format);
+  GuestTexture *host = SvrCreateHostSurface(SvrScaled(width), SvrScaled(height), format);
   BD_INFO("SvR surface 0x{:08X}: {}x{} format 0x{:08X} -> host {}", surface_va, width, height,
           format, host ? "ok" : "FAILED");
   g_surfaces.emplace(surface_va, HostTarget{host, {bits, format}});
@@ -193,9 +204,8 @@ GuestTexture *SvrResolveTarget(u32 texture_va) {
   const u32 levels = fetch.mip_max_level + 1;
   // ConvertGuestFormat maps a raw GPUTEXTUREFORMAT byte by its low 6 bits; the tag keeps a small
   // byte from matching one of re:Blue's D3DFormat values (k_8_8_8_8 = 6 = its kIndex32).
-  const u32 scale = SvrRenderScale();
   SvrDiagTimer create(SvrDiag::kTargetCreate);
-  GuestTexture *host = SvrCreateHostTexture(width * scale, height * scale, 1, levels, 0,
+  GuestTexture *host = SvrCreateHostTexture(SvrScaled(width), SvrScaled(height), 1, levels, 0,
                                             0xC0000000u | u32(fetch.format), 0);
   BD_INFO("SvR target 0x{:08X}: {}x{} fmt {} levels {} -> host {}", texture_va, width, height,
           u32(fetch.format), levels, host ? "ok" : "FAILED");

@@ -34,8 +34,9 @@ to run well on today's hardware.
 - **Native, not emulated:** the game's own code is recompiled for PC and drawn by a native renderer,
   Direct3D 12 on Windows and Vulkan on Linux and the Steam Deck.
 - **60 fps,** using the game's own 60 fps mode so everything plays at the right speed.
-- **Up to 4K:** 1440p on 1080p and 1440p screens, 4K on 4K screens, 720p on the Steam Deck. The
-  console's edge blur and its background blur (depth of field) are off, for a sharp image.
+- **480p up to 8K:** Auto picks 1440p on 1080p and 1440p screens, 4K on 4K screens and 720p on the
+  Steam Deck; 480p helps weak graphics cards. The console's edge blur and its background blur (depth
+  of field) are off for a sharp image; both are settings.
 - **Smooth on lower-end PCs too:** no first-time stutters, and a GTX 1060 with an i7-8700 holds 60 fps.
 - **Play in your language:** English, Español, Deutsch or Italiano. The disc has these translations,
   but the game only ever showed English.
@@ -68,8 +69,8 @@ ID `5E35F037`, about 7.8 GB).
 <details>
 <summary><b>Settings, controllers and keyboard</b></summary>
 
-- **The settings menu:** resolution (Auto, 720p, 1440p, 4K), graphics API (Auto, Direct3D 12,
-  Vulkan), fullscreen or window, 60 or 30 fps, screen shape, FPS counter, sound, **Language**,
+- **The settings menu:** resolution (Auto, 480p, 720p, 1080p, 1440p, 4K, 8K), graphics API (Auto, Direct3D 12,
+  Vulkan), fullscreen or window, 60 or 30 fps, screen shape, **Edge blur**, **Background blur**, FPS counter, sound, **Language**,
   keyboard controls, **Controllers**, CPU priority and updates. Saved in `svr2008.toml`.
 - **Language:** the game's text and menus in English, Español, Deutsch or Italiano (the commentary is
   English only, and the SvR 2008 disc has no French). Pick one and press A twice to restart straight
