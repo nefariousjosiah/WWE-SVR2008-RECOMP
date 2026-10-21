@@ -64,6 +64,14 @@ name = "SvrTextEntryPollHook"
 address = 0x824C6708
 registers = []
 
+# Entrance scripts' constant additive white overlay (src/entrance_veil.cpp, GitHub issue #9): the
+# overlay's draw (sub_8233DD98, r3 = the overlay) is skipped.
+[[midasm_hook]]
+name = "SvrEntranceVeilHook"
+address = 0x8233DD98
+registers = ["r3"]
+return_on_true = true
+
 # Branch targets the analyzer leaves outside any function.
 [functions]
 0x8289C9A0 = { size = 4 }   # lone thunk: b 0x826DEC38
