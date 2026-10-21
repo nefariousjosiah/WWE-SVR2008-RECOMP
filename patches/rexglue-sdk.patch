@@ -1,3 +1,30 @@
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 8426798..93397ed 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -247,7 +247,9 @@ class XmaContext {
+   const uint8_t* GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_packet_index,
+                                uint32_t current_input_packet_count);
+   uint32_t GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_packet_index,
+-                                   uint32_t current_input_packet_count);
++                                   uint32_t current_input_packet_count,
++                                   uint32_t* packets_past_end = nullptr);
++  void EnterInputBuffer(XMA_CONTEXT_DATA* data, uint32_t packets_to_skip);
+   uint8_t* GetCurrentInputBuffer(XMA_CONTEXT_DATA* data);
+ 
+   void Decode(XMA_CONTEXT_DATA* data);
+@@ -306,6 +308,11 @@ class XmaContext {
+   bool carry_valid_ = false;
+   uint8_t pending_output_limit_ = 0;
+   uint8_t pending_start_skip_ = 0;
++
++  // Multi-stream XMA (5.1 as three interleaved stereo streams): packets of this
++  // stream that a skip count carried past the end of the last input buffer, to
++  // skip at the start of the next one.
++  uint32_t pending_packet_skip_ = 0;
+ };
+ 
+ }  // namespace rex::audio
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
 index 96d362b..26f735b 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
@@ -175,6 +202,154 @@ index 364690d..0b88d80 100644
 +
  }  // namespace util
  }  // namespace rex::ui::d3d12
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..ae4b635 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -206,6 +206,7 @@ void XmaContext::ResetDecoderState() {
+   carry_valid_ = false;
+   pending_output_limit_ = 0;
+   pending_start_skip_ = 0;
++  pending_packet_skip_ = 0;
+   current_frame_remaining_subframes_ = 0;
+   loop_frame_output_limit_ = 0;
+   loop_start_skip_pending_ = false;
+@@ -304,11 +305,18 @@ const uint8_t* XmaContext::GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_p
+     return nullptr;
+   }
+ 
+-  return memory()->TranslatePhysical(next_buffer_address);
++  // A skip count that runs past this buffer lands that many packets into the
++  // next one (multi-stream files interleave the other streams' packets).
++  const uint32_t index_in_next = next_packet_index - current_input_packet_count;
++  if (index_in_next >= data->GetInputBufferPacketCount(next_buffer_index)) {
++    return nullptr;
++  }
++  return memory()->TranslatePhysical(next_buffer_address) + index_in_next * kBytesPerPacket;
+ }
+ 
+ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_packet_index,
+-                                             uint32_t current_input_packet_count) {
++                                             uint32_t current_input_packet_count,
++                                             uint32_t* packets_past_end) {
+   while (next_packet_index < current_input_packet_count) {
+     uint8_t* next_packet = buffer + (next_packet_index * kBytesPerPacket);
+     const uint32_t packet_frame_offset = xma::GetPacketFrameOffset(next_packet);
+@@ -316,12 +324,52 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
+     if (packet_frame_offset <= kMaxFrameSizeinBits) {
+       return (next_packet_index * kBitsPerPacket) + packet_frame_offset;
+     }
+-    next_packet_index++;
++    // No frame starts in this packet: go on to this stream's next packet. In a
++    // multi-stream file the skip count steps over the other streams' packets;
++    // a single stream has a skip of 0, the very next packet.
++    const uint8_t skip = xma::GetPacketSkipCount(next_packet);
++    next_packet_index += (skip == 0xFF ? 0u : skip) + 1;
+   }
+ 
++  if (packets_past_end) {
++    *packets_past_end = next_packet_index - current_input_packet_count;
++  }
+   return kBitsPerPacketHeader;
+ }
+ 
++// Positions the read offset in the current input buffer (just swapped in) on
++// this stream's first frame, `packets_to_skip` packets in. Without the skip, a
++// multi-stream context restarts every buffer at packet 0, the first stream's,
++// and all of a 5.1 file's contexts end up decoding that one stream.
++void XmaContext::EnterInputBuffer(XMA_CONTEXT_DATA* data, uint32_t packets_to_skip) {
++  pending_packet_skip_ = packets_to_skip;
++  data->input_buffer_read_offset = kBitsPerPacketHeader;
++  if (!data->IsCurrentInputBufferValid()) {
++    return;  // Applied when the game hands over the next buffer.
++  }
++  uint8_t* buffer = memory()->TranslatePhysical(data->GetCurrentInputBufferAddress());
++  const uint32_t packet_count = data->GetCurrentInputBufferPacketCount();
++  uint32_t past_end = 0;
++  const uint32_t offset =
++      GetNextPacketReadOffset(buffer, packets_to_skip, packet_count, &past_end);
++  if (offset == kBitsPerPacketHeader && packets_to_skip < packet_count &&
++      xma::GetPacketFrameOffset(buffer + packets_to_skip * kBytesPerPacket) ==
++          kBitsPerPacketHeader) {
++    // A frame right after the header of the target packet (offset 32 there too).
++    pending_packet_skip_ = 0;
++    data->input_buffer_read_offset = packets_to_skip * kBitsPerPacket + kBitsPerPacketHeader;
++    return;
++  }
++  if (offset == kBitsPerPacketHeader) {
++    // No frame of this stream begins in this buffer either: on to the next one.
++    SwapInputBuffer(data);
++    pending_packet_skip_ = past_end;
++    return;
++  }
++  pending_packet_skip_ = 0;
++  data->input_buffer_read_offset = offset;
++}
++
+ memory::RingBuffer XmaContext::PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data) {
+   const uint32_t output_capacity = data->output_buffer_block_count * kOutputBytesPerBlock;
+   const uint32_t output_read_offset = data->output_buffer_read_offset * kOutputBytesPerBlock;
+@@ -545,6 +593,16 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+ 
+   uint8_t* current_input_buffer = GetCurrentInputBuffer(data);
+ 
++  // A skip carried over from the previous buffer: this stream's next packet is
++  // further into the buffer that just became current.
++  if (pending_packet_skip_ && data->input_buffer_read_offset == kBitsPerPacketHeader) {
++    EnterInputBuffer(data, pending_packet_skip_);
++    if (data->input_buffer_read_offset == kBitsPerPacketHeader) {
++      return;
++    }
++    current_input_buffer = GetCurrentInputBuffer(data);
++  }
++
+   input_buffer_.fill(0);
+ 
+   // Loop-end frame: decode it here (output limited to loop_subframe_end),
+@@ -588,10 +646,13 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+ 
+   // Full packet skip (0xFF) -- no new frames begin in this packet.
+   if (skip_count == 0xFF) {
+-    uint32_t next_input_offset =
+-        GetNextPacketReadOffset(current_input_buffer, packet_index + 1, current_input_packet_count);
++    uint32_t past_end = 0;
++    uint32_t next_input_offset = GetNextPacketReadOffset(
++        current_input_buffer, packet_index + 1, current_input_packet_count, &past_end);
+     if (next_input_offset == kBitsPerPacketHeader) {
+       SwapInputBuffer(data);
++      EnterInputBuffer(data, past_end);
++      return;
+     }
+     data->input_buffer_read_offset = next_input_offset;
+     return;
+@@ -722,20 +783,16 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     return;
+   }
+ 
+-  uint32_t next_input_offset =
+-      GetNextPacketReadOffset(current_input_buffer, next_packet_index, current_input_packet_count);
++  uint32_t past_end = 0;
++  const uint32_t next_input_offset = GetNextPacketReadOffset(
++      current_input_buffer, next_packet_index, current_input_packet_count, &past_end);
+ 
+   if (next_input_offset == kBitsPerPacketHeader) {
++    // This stream's next packet is in the next buffer, `past_end` packets in
++    // (0 for a single stream; the interleaved streams' packets otherwise).
+     SwapInputBuffer(data);
+-    if (data->IsAnyInputBufferValid()) {
+-      next_input_offset = xma::GetPacketFrameOffset(
+-          memory()->TranslatePhysical(data->GetCurrentInputBufferAddress()));
+-
+-      if (next_input_offset > kMaxFrameSizeinBits) {
+-        SwapInputBuffer(data);
+-        return;
+-      }
+-    }
++    EnterInputBuffer(data, past_end);
++    return;
+   }
+   data->input_buffer_read_offset = next_input_offset;
+ }
 diff --git a/src/core/logging.cpp b/src/core/logging.cpp
 index 1645848..618f314 100644
 --- a/src/core/logging.cpp
