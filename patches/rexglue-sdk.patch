@@ -902,6 +902,311 @@ index 813bb1c..173ee69 100644
    if (!assignment_) {
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 3f9422d..3ab9bd8 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -21,7 +21,10 @@
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
++#include <span>
++#include <string>
+ #include <string_view>
++#include <vector>
+ 
+ REXCVAR_DEFINE_BOOL(mnk_mode, false, "Input", "Enable keyboard/mouse controller emulation");
+ REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
+@@ -66,15 +69,31 @@ namespace {
+ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
+ 
+ // Bind values are a comma-separated list of alternatives, each optionally
+-// carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+-// so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+-// it. That is what lets the D-pad share the arrow keys. A consequence is
+-// that binding a bare modifier name ("Shift") can never fire, since holding it
+-// makes the live mask non-zero while the bind wants zero.
++// carrying modifier prefixes: "Q,I" or "Shift+W". A combo fires only with
++// exactly its modifiers held. A plain key also fires while modifiers are held,
++// unless some bind has that key with exactly those modifiers: then the combo
++// wins. That is what lets the D-pad share the arrow keys ("Shift+Up" is the
++// D-pad, "Up" the right stick) without Shift silencing every other key.
++// A modifier bound on its own ("Shift" as a button) is a plain button: it
++// leaves the modifier mask, so combos that use it never fire.
+ constexpr uint8_t kModShift = 1u << 0;
+ constexpr uint8_t kModCtrl = 1u << 1;
+ constexpr uint8_t kModAlt = 1u << 2;
+ 
++// The modifier bit a key stands for, 0 for other keys.
++uint8_t ModifierBit(uint16_t vk) {
++  switch (static_cast<rex::ui::VirtualKey>(vk)) {
++    case rex::ui::VirtualKey::kShift:
++      return kModShift;
++    case rex::ui::VirtualKey::kControl:
++      return kModCtrl;
++    case rex::ui::VirtualKey::kMenu:
++      return kModAlt;
++    default:
++      return 0;
++  }
++}
++
+ uint8_t LiveModifiers(const bool (&key_down)[256]) {
+   uint8_t mods = 0;
+   if (key_down[static_cast<uint16_t>(rex::ui::VirtualKey::kShift)])
+@@ -122,18 +141,95 @@ std::string_view TrimSpaces(std::string_view s) {
+   return s;
+ }
+ 
+-bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
+-  uint8_t want = TakeModifiers(token);
+-  if (want != live_mods) {
++// One alternative of a bind: the modifiers it asks for and its key.
++struct BindToken {
++  uint8_t mods;
++  uint16_t key;
++};
++
++// Appends the alternatives of one bind value; names that aren't keys are left out.
++void ParseBind(std::string_view rest, std::vector<BindToken>& out) {
++  while (!rest.empty()) {
++    size_t comma = rest.find(',');
++    std::string_view token = rest.substr(0, comma);
++    if (comma == std::string_view::npos) {
++      rest = std::string_view();
++    } else {
++      rest.remove_prefix(comma + 1);
++    }
++    token = TrimSpaces(token);
++    if (token.empty()) {
++      continue;
++    }
++    uint8_t mods = TakeModifiers(token);
++    // "Ctrl" is accepted as a prefix, so as a key on its own too.
++    rex::ui::VirtualKey vk =
++        token == "Ctrl" ? rex::ui::VirtualKey::kControl : rex::ui::ParseVirtualKey(token);
++    uint16_t idx = static_cast<uint16_t>(vk);
++    if (vk != rex::ui::VirtualKey::kNone && idx < 256) {
++      out.push_back({mods, idx});
++    }
++  }
++}
++
++// Every bind, parsed once per poll, with what matching needs to know about all of them.
++class BindSet {
++ public:
++  BindSet(const bool (&key_down)[256], std::span<const std::string> values)
++      : key_down_(key_down) {
++    binds_.reserve(values.size());
++    for (std::string_view value : values) {
++      binds_.emplace_back();
++      ParseBind(value, binds_.back());
++    }
++    // A modifier key bound on its own is a button, not a modifier.
++    for (const auto& bind : binds_) {
++      for (const BindToken& t : bind) {
++        if (t.mods == 0) {
++          standalone_ |= ModifierBit(t.key);
++        }
++      }
++    }
++    live_ = LiveModifiers(key_down) & ~standalone_;
++  }
++
++  bool Pressed(size_t index) const {
++    for (const BindToken& t : binds_[index]) {
++      if (TokenPressed(t)) {
++        return true;
++      }
++    }
+     return false;
+   }
+-  rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
+-  if (vk == rex::ui::VirtualKey::kNone) {
++
++ private:
++  bool TokenPressed(const BindToken& t) const {
++    if (!key_down_[t.key]) {
++      return false;
++    }
++    if (t.mods == live_ || (t.mods == 0 && (ModifierBit(t.key) & standalone_))) {
++      return true;
++    }
++    // A plain key with modifiers held, unless a combo claims this key with them.
++    return t.mods == 0 && !HasCombo(t.key, live_);
++  }
++
++  bool HasCombo(uint16_t key, uint8_t mods) const {
++    for (const auto& bind : binds_) {
++      for (const BindToken& t : bind) {
++        if (t.key == key && t.mods == mods) {
++          return true;
++        }
++      }
++    }
+     return false;
+   }
+-  uint16_t idx = static_cast<uint16_t>(vk);
+-  return idx < 256 && key_down[idx];
+-}
++
++  const bool (&key_down_)[256];
++  std::vector<std::vector<BindToken>> binds_;
++  uint8_t standalone_ = 0;
++  uint8_t live_ = 0;
++};
+ 
+ std::atomic<bool> mouse_look_active{true};
+ 
+@@ -200,25 +296,6 @@ bool MnkInputDriver::IsEnabled() const {
+   return REXCVAR_GET(mnk_mode);
+ }
+ 
+-static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val) {
+-  const uint8_t live_mods = LiveModifiers(key_down);
+-  std::string_view rest(cvar_val);
+-  while (!rest.empty()) {
+-    size_t comma = rest.find(',');
+-    std::string_view token = rest.substr(0, comma);
+-    if (comma == std::string_view::npos) {
+-      rest = std::string_view();
+-    } else {
+-      rest.remove_prefix(comma + 1);
+-    }
+-    token = TrimSpaces(token);
+-    if (!token.empty() && TokenPressed(key_down, token, live_mods)) {
+-      return true;
+-    }
+-  }
+-  return false;
+-}
+-
+ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+   // Disabled means no device at all, so it never occupies a guest user slot.
+   if (!IsEnabled()) {
+@@ -274,61 +351,97 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+ 
+   std::lock_guard lock(state_mutex_);
+ 
++  // Every bind is matched against all the others (a combo on a key silences its plain bind), so
++  // they are parsed together. The order matches the enum below.
++  const std::string values[] = {
++      REXCVAR_GET(keybind_a),
++      REXCVAR_GET(keybind_b),
++      REXCVAR_GET(keybind_x),
++      REXCVAR_GET(keybind_y),
++      REXCVAR_GET(keybind_left_shoulder),
++      REXCVAR_GET(keybind_right_shoulder),
++      REXCVAR_GET(keybind_lstick_press),
++      REXCVAR_GET(keybind_rstick_press),
++      REXCVAR_GET(keybind_back),
++      REXCVAR_GET(keybind_start),
++      REXCVAR_GET(keybind_guide),
++      REXCVAR_GET(keybind_dpad_up),
++      REXCVAR_GET(keybind_dpad_down),
++      REXCVAR_GET(keybind_dpad_left),
++      REXCVAR_GET(keybind_dpad_right),
++      REXCVAR_GET(keybind_left_trigger),
++      REXCVAR_GET(keybind_right_trigger),
++      REXCVAR_GET(keybind_lstick_left),
++      REXCVAR_GET(keybind_lstick_right),
++      REXCVAR_GET(keybind_lstick_up),
++      REXCVAR_GET(keybind_lstick_down),
++      REXCVAR_GET(keybind_rstick_left),
++      REXCVAR_GET(keybind_rstick_right),
++      REXCVAR_GET(keybind_rstick_up),
++      REXCVAR_GET(keybind_rstick_down),
++  };
++  enum : size_t {
++    kA, kB, kX, kY, kLeftShoulder, kRightShoulder, kLeftThumb, kRightThumb, kBack, kStart, kGuide,
++    kDpadUp, kDpadDown, kDpadLeft, kDpadRight, kLeftTrigger, kRightTrigger, kLStickLeft,
++    kLStickRight, kLStickUp, kLStickDown, kRStickLeft, kRStickRight, kRStickUp, kRStickDown,
++  };
++  const BindSet binds(key_down_, values);
++
+   uint16_t buttons = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
++  if (binds.Pressed(kA))
+     buttons |= X_INPUT_GAMEPAD_A;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_b)))
++  if (binds.Pressed(kB))
+     buttons |= X_INPUT_GAMEPAD_B;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_x)))
++  if (binds.Pressed(kX))
+     buttons |= X_INPUT_GAMEPAD_X;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_y)))
++  if (binds.Pressed(kY))
+     buttons |= X_INPUT_GAMEPAD_Y;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_left_shoulder)))
++  if (binds.Pressed(kLeftShoulder))
+     buttons |= X_INPUT_GAMEPAD_LEFT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_right_shoulder)))
++  if (binds.Pressed(kRightShoulder))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_press)))
++  if (binds.Pressed(kLeftThumb))
+     buttons |= X_INPUT_GAMEPAD_LEFT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_press)))
++  if (binds.Pressed(kRightThumb))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_back)))
++  if (binds.Pressed(kBack))
+     buttons |= X_INPUT_GAMEPAD_BACK;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_start)))
++  if (binds.Pressed(kStart))
+     buttons |= X_INPUT_GAMEPAD_START;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_guide)))
++  if (binds.Pressed(kGuide))
+     buttons |= X_INPUT_GAMEPAD_GUIDE;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_up)))
++  if (binds.Pressed(kDpadUp))
+     buttons |= X_INPUT_GAMEPAD_DPAD_UP;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_down)))
++  if (binds.Pressed(kDpadDown))
+     buttons |= X_INPUT_GAMEPAD_DPAD_DOWN;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_left)))
++  if (binds.Pressed(kDpadLeft))
+     buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right)))
++  if (binds.Pressed(kDpadRight))
+     buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
+ 
+-  uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
+-  uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
++  uint8_t lt = binds.Pressed(kLeftTrigger) ? 0xFF : 0;
++  uint8_t rt = binds.Pressed(kRightTrigger) ? 0xFF : 0;
+ 
+   int32_t lx = 0;
+   int32_t ly = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_left)))
++  if (binds.Pressed(kLStickLeft))
+     lx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_right)))
++  if (binds.Pressed(kLStickRight))
+     lx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_up)))
++  if (binds.Pressed(kLStickUp))
+     ly += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_down)))
++  if (binds.Pressed(kLStickDown))
+     ly -= INT16_MAX;
+ 
+   int32_t rx = 0;
+   int32_t ry = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_left)))
++  if (binds.Pressed(kRStickLeft))
+     rx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_right)))
++  if (binds.Pressed(kRStickRight))
+     rx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_up)))
++  if (binds.Pressed(kRStickUp))
+     ry += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
++  if (binds.Pressed(kRStickDown))
+     ry -= INT16_MAX;
+ 
+   if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
 diff --git a/src/kernel/xam/apps/xmp_app.cpp b/src/kernel/xam/apps/xmp_app.cpp
 index a5e9088..27a023d 100644
 --- a/src/kernel/xam/apps/xmp_app.cpp
