@@ -27,6 +27,27 @@ GuestTexture *SvrResolveTexture(u32 texture_va);
 // Called once per presented frame (mirror checks are per frame).
 void SvrOnFrame();
 
+// Wide and tall screens (src/widescreen.cpp). In a frame that fills a screen shape other than
+// 16:9, the game's 1280x720 targets (its scene and depth, resolves of them, the front buffer) are
+// drawn through a second host counterpart SvrFrameShape() times the usual width (wide) or height
+// (tall); every other target, and every target in a 16:9 frame, keeps its usual one. The shape is
+// taken once per frame so a frame never mixes the two.
+void SvrFrameShape(float &wide, float &tall);
+// The factors a host target was made with (1, 1 for every target but those).
+void SvrTargetShape(const GuestTexture *host, float &wide, float &tall);
+// A depth-tested (3D) draw into a shaped target: the scene is still being drawn. A frame starts
+// the shape when the game set up a scene camera (widescreen.cpp); it keeps it while the scene is
+// drawn even without one, as behind the pause menu, and drops it on the first frame without.
+void SvrNoteSceneDraw();
+
+// Where the current draw's guest pixels land in its host target: host = guest * scale + offset
+// (the internal resolution, the target's shape, and for the HUD on a wide target its 16:9 middle).
+struct SvrPixelMap {
+  float scale_x = 1.0f, scale_y = 1.0f, offset_x = 0.0f, offset_y = 0.0f;
+};
+void SvrSetPixelMap(const SvrPixelMap &map);
+const SvrPixelMap &SvrCurrentPixelMap();
+
 // Internal resolution, as the height the guest's 720 lines become: host render targets and
 // resolve textures are SvrRenderHeight() / 720 times the guest's size (480p and 1080p are
 // fractions), and viewports/scissors are scaled to match. Set with svr_render_scale (0 = auto, a

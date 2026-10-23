@@ -152,9 +152,13 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         {"Frame rate", {"60 fps", "30 fps (original)"},
          "60 fps uses the game's own 60 fps mode, so everything plays at the right speed. Takes "
          "effect from the next screen or match."},
-        {"Screen shape", {"16:9 (correct)", "Stretch to fill"},
-         "Matters on 16:10 screens like the Steam Deck: 16:9 keeps thin bars, stretch fills the "
-         "screen."},
+        {"Screen shape",
+         {"16:9 (original)", "16:10 (experimental)", "21:9 (experimental)", "32:9 (experimental)",
+          "Stretch to fill"},
+         "Experimental: 16:10 (Steam Deck, many laptops), 21:9 and 32:9 (ultrawide) fill the "
+         "screen in gameplay only for now: matches, entrances and cutscenes show more of the "
+         "arena, nothing stretched, the HUD in its usual place. Menus stay 16:9. Stretch fills "
+         "any screen by stretching the 16:9 picture."},
         {"Edge blur", {"Off (sharp)", "On (original)"},
          "The game's own anti-aliasing blurs every edge, and more so above 720p. Off keeps the "
          "picture sharp; On is how the console looked."},
@@ -201,7 +205,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     values_[kGraphicsApi] = api == "d3d12" ? 1 : api == "vulkan" ? 2 : 0;
     values_[kDisplay] = hooks_.is_fullscreen && hooks_.is_fullscreen() ? 0 : 1;
     values_[kFrameRate] = Get("svr_60fps") == "true" ? 0 : 1;
-    values_[kShape] = Get("bd_aspect_ratio") == "6" ? 1 : 0;
+    values_[kShape] = ShapeRow(std::atoi(Get("bd_aspect_ratio").c_str()));
     values_[kEdgeBlur] = Get("svr_edge_blur") == "true" ? 1 : 0;
     values_[kDepthOfField] = Get("svr_depth_of_field") == "true" ? 1 : 0;
     values_[kCounter] = hooks_.fps_counter_on && hooks_.fps_counter_on() ? 0 : 1;
@@ -220,6 +224,16 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
   }
 
   static std::string Get(const char* name) { return rex::cvar::GetFlagByName(name); }
+
+  // bd_aspect_ratio for each Screen shape choice (gpu/settings.h AspectMode: 5 = auto, which SvR
+  // draws at 16:9; 2 = 16:10, 3 = 21:9, 4 = 32:9, 6 = stretch).
+  static constexpr int kShapeValues[] = {5, 2, 3, 4, 6};
+  static int ShapeRow(int value) {
+    for (int i = 0; i < int(std::size(kShapeValues)); ++i)
+      if (kShapeValues[i] == value)
+        return i;
+    return 0;  // 0 (16:9) and 1 (4:3) both draw 16:9
+  }
 
   // svr_render_scale for each Resolution choice: a multiple of 720p, or a height (480, 1080).
   static constexpr int kResolutionValues[] = {0, 480, 1, 1080, 2, 3, 6};
@@ -274,7 +288,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         Set("svr_60fps", v == 0 ? "true" : "false");
         break;
       case kShape:
-        Set("bd_aspect_ratio", v == 1 ? "6" : "5");
+        Set("bd_aspect_ratio", std::to_string(kShapeValues[v]));
         break;
       case kCounter:
         if (hooks_.set_fps_counter)

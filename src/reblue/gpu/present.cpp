@@ -144,10 +144,19 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt,
                                back, plume::RenderTextureLayout::COLOR_WRITE));
   s.command_list->setFramebuffer(back_fb);
 
+#if defined(SVR_NATIVE_RENDERER)
+  // SvR: the frame's own shape. 16:9, or in a match on a wide or tall screen (src/widescreen.cpp)
+  // the shaped front buffer's; stretch fills the window whatever it is.
+  const double present_aspect =
+      Output::StretchToFill() ? 0.0
+      : rt->height           ? double(rt->width) / double(rt->height)
+                             : kDesignCanvasAspect;
+#else
   const double present_aspect =
       (bd::engine::SofdecPlayer::Playing() && !Output::StretchToFill())
           ? kDesignCanvasAspect
           : Output::RenderAspect();
+#endif
   u32 fit_w = swap_w, fit_h = swap_h;
   i32 off_x = 0, off_y = 0;
   Output::ComputeFit(swap_w, swap_h, present_aspect, fit_w, fit_h, off_x,

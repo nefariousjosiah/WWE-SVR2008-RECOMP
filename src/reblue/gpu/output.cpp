@@ -106,6 +106,15 @@ double Output::RenderDensity() {
 
 double Output::ConfiguredAspect() {
   switch (static_cast<AspectMode>(Settings::Get().AspectRatio())) {
+#if defined(SVR_NATIVE_RENDERER)
+  // SvR's render rect stays 16:9 for every shape: wide and tall screens draw their matches into
+  // shaped targets (svr_resources.h SvrFrameShape) and present those at their own shape.
+  case AspectMode::Standard:
+  case AspectMode::Wide:
+  case AspectMode::Ultrawide:
+  case AspectMode::SuperUltrawide:
+    return 16.0 / 9.0;
+#else
   case AspectMode::Standard:
     return 4.0 / 3.0;
   case AspectMode::Wide:
@@ -114,6 +123,7 @@ double Output::ConfiguredAspect() {
     return 64.0 / 27.0;
   case AspectMode::SuperUltrawide:
     return 32.0 / 9.0;
+#endif
   case AspectMode::Auto:
 #if defined(SVR_NATIVE_RENDERER)
     // SvR always draws 16:9 (Blue Dragon could match the window): auto keeps that shape, with

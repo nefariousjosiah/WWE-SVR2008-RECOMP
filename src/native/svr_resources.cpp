@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <shared_mutex>
@@ -32,6 +33,12 @@ void SvrWatchdogHeartbeat();
 // src/native/display_size.cpp.
 bool SvrDisplaySize(uint32_t &w, uint32_t &h);
 bool SvrOnSteamDeck();
+// src/widescreen.cpp.
+namespace svr {
+double WideAspect();
+float WideFactor();
+float TallFactor();
+}  // namespace svr
 
 REXCVAR_DEFINE_INT32(svr_render_scale, 0, "SvR",
                      "Internal resolution: 1 = 720p (original), 2 = 1440p, 3 = 4K (2160p), "
@@ -60,6 +67,25 @@ struct HostTarget {
 };
 std::unordered_map<u32, HostTarget> g_surfaces;  // D3DSurface VA -> host render target
 std::unordered_map<u32, HostTarget> g_targets;   // texture VA -> GPU-written host texture
+
+// Wide and tall frames: the shaped counterparts of the 1280x720 targets (see SvrFrameShape), kept
+// beside the usual ones so going between menus and matches never rebuilds either.
+struct ShapedHost {
+  GuestTexture *host = nullptr;
+  u32 desc[2] = {};
+  float wide = 1.0f, tall = 1.0f;
+};
+std::unordered_map<u32, ShapedHost> g_shaped_surfaces;
+std::unordered_map<u32, ShapedHost> g_shaped_targets;
+std::unordered_map<const GuestTexture *, std::pair<float, float>> g_shape_of;  // host -> factors
+std::atomic<float> g_frame_wide{1.0f};
+std::atomic<float> g_frame_tall{1.0f};
+std::atomic<u32> g_scene_draws{0};  // this frame's (SvrNoteSceneDraw)
+SvrPixelMap g_pixel_map;  // the current draw's (recorded under the draw lock)
+
+bool SceneSized(u32 width, u32 height) { return width == 1280 && height == 720; }
+u32 ShapedWidth(float wide) { return (u32(std::lround(SvrScaled(1280) * wide)) + 1u) & ~1u; }
+u32 ShapedHeight(float tall) { return (u32(std::lround(SvrScaled(720) * tall)) + 1u) & ~1u; }
 
 // The texture's GPUTEXTURE_FETCH_CONSTANT (D3DTexture+0x1C), as host-order dwords.
 bool ReadFetch(u32 texture_va, rex::graphics::xenos::xe_gpu_texture_fetch_t &fetch) {
@@ -158,9 +184,68 @@ u32 SvrScaled(u32 guest) {
   return u32((u64(guest) * SvrRenderHeight() + 360u) / 720u);
 }
 
+// The shaped counterpart of a 1280x720 surface in a wide or tall frame, else null.
+GuestTexture *ShapedSurface(u32 surface_va) {
+  float wide = 1.0f, tall = 1.0f;
+  SvrFrameShape(wide, tall);
+  if (wide == 1.0f && tall == 1.0f)
+    return nullptr;
+  const auto *surface = bd::mem::at<const D3DSurface>(surface_va);
+  if (!surface)
+    return nullptr;
+  const u32 bits = surface->SizeBits;
+  const u32 format = surface->Format;
+  if (!SceneSized((bits >> 18) + 1, ((bits >> 3) & 0x7FFF) + 1))
+    return nullptr;
+  std::lock_guard lock(g_mutex);
+  ShapedHost &t = g_shaped_surfaces[surface_va];
+  if (t.host && t.desc[0] == bits && t.desc[1] == format && t.wide == wide && t.tall == tall)
+    return t.host;
+  RetireHost(t.host);
+  t = {SvrCreateHostSurface(ShapedWidth(wide), ShapedHeight(tall), format), {bits, format}, wide,
+       tall};
+  if (t.host)
+    g_shape_of[t.host] = {wide, tall};
+  BD_INFO("SvR surface 0x{:08X}: shaped {}x{} (x{:.3f}, y{:.3f}) -> host {}", surface_va,
+          ShapedWidth(wide), ShapedHeight(tall), wide, tall, t.host ? "ok" : "FAILED");
+  return t.host;
+}
+
+// The shaped counterpart of a 1280x720 GPU-written texture in a wide or tall frame, else null.
+// `create`: make it if there isn't one yet (a resolve), else only look it up (sampling).
+GuestTexture *ShapedTarget(u32 texture_va, bool create) {
+  float wide = 1.0f, tall = 1.0f;
+  SvrFrameShape(wide, tall);
+  if (wide == 1.0f && tall == 1.0f)
+    return nullptr;
+  rex::graphics::xenos::xe_gpu_texture_fetch_t fetch{};
+  if (!ReadFetch(texture_va, fetch) ||
+      !SceneSized(fetch.size_2d.width + 1, fetch.size_2d.height + 1))
+    return nullptr;
+  std::lock_guard lock(g_mutex);
+  auto it = g_shaped_targets.find(texture_va);
+  if (it != g_shaped_targets.end() && it->second.host && it->second.desc[0] == fetch.dword_1 &&
+      it->second.desc[1] == fetch.dword_2 && it->second.wide == wide && it->second.tall == tall)
+    return it->second.host;
+  if (!create)
+    return nullptr;
+  ShapedHost &t = g_shaped_targets[texture_va];
+  RetireHost(t.host);
+  t = {SvrCreateHostTexture(ShapedWidth(wide), ShapedHeight(tall), 1, fetch.mip_max_level + 1, 0,
+                            0xC0000000u | u32(fetch.format), 0),
+       {fetch.dword_1, fetch.dword_2}, wide, tall};
+  if (t.host)
+    g_shape_of[t.host] = {wide, tall};
+  BD_INFO("SvR target 0x{:08X}: shaped {}x{} (x{:.3f}, y{:.3f}) -> host {}", texture_va,
+          ShapedWidth(wide), ShapedHeight(tall), wide, tall, t.host ? "ok" : "FAILED");
+  return t.host;
+}
+
 GuestTexture *SvrResolveSurface(u32 surface_va) {
   if (!surface_va)
     return nullptr;
+  if (auto *shaped = ShapedSurface(surface_va))
+    return shaped;
   if (auto *host = HostResourceHeap::FromGuest<GuestTexture>(surface_va))
     return host;
   std::lock_guard lock(g_mutex);
@@ -189,6 +274,8 @@ GuestTexture *SvrResolveSurface(u32 surface_va) {
 GuestTexture *SvrResolveTarget(u32 texture_va) {
   if (!texture_va)
     return nullptr;
+  if (auto *shaped = ShapedTarget(texture_va, true))
+    return shaped;
   if (auto *host = HostResourceHeap::FromGuest<GuestTexture>(texture_va))
     return host;
   std::lock_guard lock(g_mutex);
@@ -393,6 +480,22 @@ void SvrOnFrame() {
   SvrDiagEndFrame();
   SvrWatchdogHeartbeat();
   const u64 frame = g_frame.fetch_add(1, std::memory_order_relaxed);
+  // The next frame's shape (src/widescreen.cpp), fixed for the whole frame. Held while the scene
+  // is still drawn without a scene camera (the pause menu over a match).
+  float wide = svr::WideFactor(), tall = svr::TallFactor();
+  const float was_wide = g_frame_wide.load(std::memory_order_relaxed);
+  const float was_tall = g_frame_tall.load(std::memory_order_relaxed);
+  if (wide == 1.0f && tall == 1.0f && (was_wide != 1.0f || was_tall != 1.0f) &&
+      g_scene_draws.load(std::memory_order_relaxed) > 0 && svr::WideAspect() != 0.0) {
+    wide = was_wide;
+    tall = was_tall;
+  }
+  g_scene_draws.store(0, std::memory_order_relaxed);
+  if (wide != g_frame_wide.load(std::memory_order_relaxed) ||
+      tall != g_frame_tall.load(std::memory_order_relaxed))
+    BD_INFO("SvR native: frames now drawn {:.3f} wide, {:.3f} tall", wide, tall);
+  g_frame_wide.store(wide, std::memory_order_relaxed);
+  g_frame_tall.store(tall, std::memory_order_relaxed);
   // Present rate in the log every 600 frames (pacing check).
   static auto last = std::chrono::steady_clock::now();
   if (frame % 600 == 0) {
@@ -405,6 +508,27 @@ void SvrOnFrame() {
 
 u64 SvrFrameIndex() { return g_frame.load(std::memory_order_relaxed); }
 
+void SvrFrameShape(float &wide, float &tall) {
+  wide = g_frame_wide.load(std::memory_order_relaxed);
+  tall = g_frame_tall.load(std::memory_order_relaxed);
+}
+
+void SvrTargetShape(const GuestTexture *host, float &wide, float &tall) {
+  wide = tall = 1.0f;
+  if (!host)
+    return;
+  std::lock_guard lock(g_mutex);
+  if (auto it = g_shape_of.find(host); it != g_shape_of.end()) {
+    wide = it->second.first;
+    tall = it->second.second;
+  }
+}
+
+void SvrNoteSceneDraw() { g_scene_draws.fetch_add(1, std::memory_order_relaxed); }
+
+void SvrSetPixelMap(const SvrPixelMap &map) { g_pixel_map = map; }
+const SvrPixelMap &SvrCurrentPixelMap() { return g_pixel_map; }
+
 // The game writes texture memory with the CPU whenever it likes (every Bink movie frame, menus
 // reloading into reused memory), so a mirror is checked against its source once per frame it's
 // used and rebuilt when the fetch constant or the bytes changed. A texture that can't be mirrored
@@ -412,6 +536,8 @@ u64 SvrFrameIndex() { return g_frame.load(std::memory_order_relaxed); }
 GuestTexture *SvrResolveTexture(u32 texture_va) {
   if (!texture_va)
     return nullptr;
+  if (auto *shaped = ShapedTarget(texture_va, false))
+    return shaped;
   SvrDiagTimer diag(SvrDiag::kTextureCheck);
   const u64 frame = g_frame.load(std::memory_order_relaxed);
   std::lock_guard lock(g_mutex);

@@ -66,7 +66,39 @@ struct DrawArgs {
   i32 baseVertexIndex = 0;
   u32 startIndex = 0;
   u32 startVertex = 0;
+  u32 upDataVa = 0;  // BeginVertices: the vertices as the game wrote them (big-endian)
+  u32 upStride = 0;
 };
+
+#if defined(SVR_NATIVE_RENDERER)
+// Wide and tall screens (src/widescreen.cpp): whether a draw into a shaped (wider or taller) target
+// is a piece of the 2D HUD, which stays its size in the target's 16:9 middle. The HUD is drawn
+// with BeginVertices, without depth, from positions in the game's 1280x720 pixels; a quad covering
+// the whole screen (a fade, a full-screen pass over the scene) is not HUD and fills the target, as
+// does everything 3D.
+bool SvrHudDraw(u32 device_guest, const DrawArgs &args) {
+  if (!args.upDataVa || args.upStride < 8 || !args.vertexOrIndexCount)
+    return false;
+  // RB_DEPTHCONTROL (register 0x2200, device +0x2934): z_enable is bit 1.
+  if (bd::mem::load<u32>(device_guest + 0x2934) & 2u)
+    return false;
+  float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
+  const u32 count = std::min(args.vertexOrIndexCount, 64u);
+  for (u32 i = 0; i < count; ++i) {
+    const u32 va = args.upDataVa + i * args.upStride;
+    const u32 xb = bd::mem::load<u32>(va), yb = bd::mem::load<u32>(va + 4);
+    float x, y;
+    std::memcpy(&x, &xb, 4);
+    std::memcpy(&y, &yb, 4);
+    if (!std::isfinite(x) || !std::isfinite(y))
+      return false;
+    min_x = std::min(min_x, x), max_x = std::max(max_x, x);
+    min_y = std::min(min_y, y), max_y = std::max(max_y, y);
+  }
+  const bool covers = min_x <= 1.0f && max_x >= 1279.0f && min_y <= 1.0f && max_y >= 719.0f;
+  return !covers;
+}
+#endif
 
 plume::RenderPrimitiveTopology MapPrimitiveType(u32 prim) {
   switch (static_cast<xe::PrimitiveType>(prim)) {
@@ -195,14 +227,31 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const char *name,
   // the device (floats at +0x3160; SetRenderTarget/SetDepthStencilSurface reset it to the surface).
   if (const auto *dev = bd::mem::at<const bd::gpu::D3DDevice>(device_guest)) {
     const auto &vp = dev->viewport;
-    // Host targets are SvrRenderScale() times the guest's size (a fraction at 480p and 1080p).
+    // Host targets are SvrRenderScale() times the guest's size (a fraction at 480p and 1080p),
+    // and a shaped target (wide and tall screens) that again wider or taller: the scene fills it,
+    // the HUD keeps its size in its 16:9 middle.
     const float k = bd::gpu::SvrRenderScale();
-    bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.x, float(vp.X) * k);
-    bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.y, float(vp.Y) * k);
+    const auto *target = s.render_target ? s.render_target : s.depth_stencil;
+    float wide = 1.0f, tall = 1.0f;
+    bd::gpu::SvrTargetShape(target, wide, tall);
+    bd::gpu::SvrPixelMap map{k * wide, k * tall, 0.0f, 0.0f};
+    // RB_DEPTHCONTROL (register 0x2200, device +0x2934): z_enable is bit 1.
+    if ((wide != 1.0f || tall != 1.0f) && (bd::mem::load<u32>(device_guest + 0x2934) & 2u))
+      bd::gpu::SvrNoteSceneDraw();
+    if ((wide != 1.0f || tall != 1.0f) && SvrHudDraw(device_guest, args)) {
+      map.scale_x = map.scale_y = k;
+      map.offset_x = (float(target->width) - float(bd::gpu::SvrScaled(1280))) * 0.5f;
+      map.offset_y = (float(target->height) - float(bd::gpu::SvrScaled(720))) * 0.5f;
+    }
+    bd::gpu::SvrSetPixelMap(map);
+    bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.x,
+                                         float(vp.X) * map.scale_x + map.offset_x);
+    bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.y,
+                                         float(vp.Y) * map.scale_y + map.offset_y);
     bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.width,
-                                         float(vp.Width) * k);
+                                         float(vp.Width) * map.scale_x);
     bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.height,
-                                         float(vp.Height) * k);
+                                         float(vp.Height) * map.scale_y);
     bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.minDepth,
                                          float(vp.MinZ));
     bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.maxDepth,
@@ -622,6 +671,8 @@ u32 D3DDevice_EndVertices_hook(u32 /*device_guest*/) {
                                          p.vertex_count, p.stride);
   DrawArgs args{};
   args.is_up = ok;
+  args.upDataVa = p.data_va;
+  args.upStride = p.stride;
   args.vertexOrIndexCount = p.vertex_count;
   args.startVertex = 0;
   DispatchDraw(p.device, p.primitive_type, "BeginVertices", args);
