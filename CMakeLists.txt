@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 # The release version (shown in the in-game settings menu; package_release.ps1 uses it too).
-project(svr2008 VERSION 2.0.3 LANGUAGES CXX)
+project(svr2008 VERSION 2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ set(SVR2008_SOURCES
     src/input_script.cpp
     src/language.cpp
     src/text_entry.cpp
+    src/unlock_all.cpp
     src/updater.cpp
 )
 

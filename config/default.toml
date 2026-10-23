@@ -72,6 +72,14 @@ address = 0x8233DD98
 registers = ["r3"]
 return_on_true = true
 
+# Unlock everything (src/unlock_all.cpp): the unlock check (sub_82579F80) has just computed its
+# answer in r3 (r31 = the item).
+[[midasm_hook]]
+name = "SvrUnlockAllHook"
+address = 0x82579FC0
+registers = ["r3", "r31"]
+after_instruction = true
+
 # Branch targets the analyzer leaves outside any function.
 [functions]
 0x8289C9A0 = { size = 4 }   # lone thunk: b 0x826DEC38

@@ -116,6 +116,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     kCounter,
     kSound,
     kLanguage,
+    kUnlockAll,
     kKeyboard,
     kControllers,
     kPriority,
@@ -167,6 +168,11 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
         {"Language", {"English", "Espa\xC3\xB1ol", "Deutsch", "Italiano"},
          "The language of the game's text and menus (the commentary stays in English). It "
          "changes when the game restarts: pick one, then press A to restart now."},
+        {"Unlock everything", {"Off", "On"},
+         "Every superstar, arena, attire, move and premium kit is available, as if bought in the "
+         "Shop (shows from the next menu screen). Best treated as permanent: switching it off "
+         "brings back your own progress, but rewards you earn while it's on are not saved, so "
+         "you'd lose them."},
         {"Keyboard controls", {"On", "Off"},
          "The keyboard works as a controller (rebind keys with F4). Not tested yet: a controller is "
          "recommended."},
@@ -201,6 +207,7 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
     values_[kCounter] = hooks_.fps_counter_on && hooks_.fps_counter_on() ? 0 : 1;
     values_[kSound] = Get("audio_mute") == "true" ? 1 : 0;
     values_[kLanguage] = LanguageRow(std::atoi(Get("user_language").c_str()));
+    values_[kUnlockAll] = Get("svr_unlock_all") == "true" ? 1 : 0;
     values_[kKeyboard] = Get("mnk_mode") == "true" ? 0 : 1;
     values_[kControllers] = Get("svr_controllers_shared") == "true" ? 1 : 0;
     values_[kPriority] = Get("svr_high_priority") == "true" ? 1 : 0;
@@ -280,6 +287,9 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
       case kLanguage:
         // The console's language setting: the game picks its text by it when it starts.
         Set("user_language", std::to_string(kLanguageIds[v]));
+        break;
+      case kUnlockAll:
+        Set("svr_unlock_all", v == 1 ? "true" : "false");
         break;
       case kKeyboard:
         Set("mnk_mode", v == 0 ? "true" : "false");

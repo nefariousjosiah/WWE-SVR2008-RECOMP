@@ -71,10 +71,13 @@ ID `5E35F037`, about 7.8 GB).
 
 - **The settings menu:** resolution (Auto, 480p, 720p, 1080p, 1440p, 4K, 8K), graphics API (Auto, Direct3D 12,
   Vulkan), fullscreen or window, 60 or 30 fps, screen shape, **Edge blur**, **Background blur**, FPS counter, sound, **Language**,
-  keyboard controls, **Controllers**, CPU priority and updates. Saved in `svr2008.toml`.
+  **Unlock everything**, keyboard controls, **Controllers**, CPU priority and updates. Saved in `svr2008.toml`.
 - **Language:** the game's text and menus in English, Español, Deutsch or Italiano (the commentary is
   English only, and the SvR 2008 disc has no French). Pick one and press A twice to restart straight
   into it.
+- **Unlock everything:** every superstar, arena, attire, move and premium kit is available, as if
+  bought in the Shop. Best treated as permanent: switching it off brings back your own progress,
+  but rewards you earn while it's on are not saved.
 - **Controllers:** plug yours in before starting; each controller is its own player. Playing alone
   and the game says player 2 is disconnected, or your controller stops responding? A controller that
   reconnects, or shows up twice through Steam Input / DS4Windows / DSX, can become player 2: set

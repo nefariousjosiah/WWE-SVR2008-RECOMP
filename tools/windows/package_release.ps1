@@ -83,7 +83,7 @@ Linux / Steam Deck, through Proton
 Settings: press F1 in game (or Back + Start on a controller) for the settings menu: resolution
 from 480p up to 8K, graphics API, fullscreen or window, 60 or 30 fps, screen shape, edge blur,
 background blur, FPS counter, sound,
-language (English, Spanish, German, Italian), keyboard controls, CPU priority. Saved in $Id.toml.
+language (English, Spanish, German, Italian), unlock everything, keyboard controls, CPU priority. Saved in $Id.toml.
 Graphics: $Id.exe draws with Direct3D 12 on Windows; on Steam Deck / Linux it starts
 $($Id)_vulkan.exe (Vulkan) by itself. Settings > Graphics API switches between them.
 Saves: the userdata folder (created on first start). If something goes wrong, send game.log.
