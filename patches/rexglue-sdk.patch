@@ -203,10 +203,34 @@ index 364690d..0b88d80 100644
  }  // namespace util
  }  // namespace rex::ui::d3d12
 diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
-index 11b83be..ae4b635 100644
+index 11b83be..17a1de3 100644
 --- a/src/audio/xma_context.cpp
 +++ b/src/audio/xma_context.cpp
-@@ -206,6 +206,7 @@ void XmaContext::ResetDecoderState() {
+@@ -132,6 +132,7 @@ bool XmaContext::Work() {
+     return true;
+   }
+ 
++  const int32_t free_blocks_before = remaining_subframe_blocks_in_output_buffer_;
+   while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
+     Decode(&data);
+     Consume(&output_rb, &data);
+@@ -143,7 +144,14 @@ bool XmaContext::Work() {
+ 
+   data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
+ 
+-  if (output_rb.empty()) {
++  // read == write is either an empty ring or one this pass filled all the way round. Only the
++  // second means "full" (output_buffer_valid = 0): the game's XMA reader (FMOD) takes a full ring
++  // and reports end of stream only on an empty, still-valid one. Marking an empty ring full after a
++  // pass that wrote nothing (the input is used up) made it replay the ring's last 1024 samples
++  // until the line's estimated length ran out: the end of commentary lines stretched, SvR 2009
++  // issue #7.
++  const bool wrote = remaining_subframe_blocks_in_output_buffer_ != free_blocks_before;
++  if (wrote && output_rb.empty()) {
+     data.output_buffer_valid = 0;
+   }
+ 
+@@ -206,6 +214,7 @@ void XmaContext::ResetDecoderState() {
    carry_valid_ = false;
    pending_output_limit_ = 0;
    pending_start_skip_ = 0;
@@ -214,7 +238,7 @@ index 11b83be..ae4b635 100644
    current_frame_remaining_subframes_ = 0;
    loop_frame_output_limit_ = 0;
    loop_start_skip_pending_ = false;
-@@ -304,11 +305,18 @@ const uint8_t* XmaContext::GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_p
+@@ -304,11 +313,18 @@ const uint8_t* XmaContext::GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_p
      return nullptr;
    }
  
@@ -235,7 +259,7 @@ index 11b83be..ae4b635 100644
    while (next_packet_index < current_input_packet_count) {
      uint8_t* next_packet = buffer + (next_packet_index * kBytesPerPacket);
      const uint32_t packet_frame_offset = xma::GetPacketFrameOffset(next_packet);
-@@ -316,12 +324,52 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
+@@ -316,12 +332,52 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
      if (packet_frame_offset <= kMaxFrameSizeinBits) {
        return (next_packet_index * kBitsPerPacket) + packet_frame_offset;
      }
@@ -289,7 +313,37 @@ index 11b83be..ae4b635 100644
  memory::RingBuffer XmaContext::PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data) {
    const uint32_t output_capacity = data->output_buffer_block_count * kOutputBytesPerBlock;
    const uint32_t output_read_offset = data->output_buffer_read_offset * kOutputBytesPerBlock;
-@@ -545,6 +593,16 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+@@ -357,8 +413,19 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
+     packet_info.current_frame_size_ = first_frame_offset - frame_offset;
+   }
+ 
++  bool next_frame_follows = false;  // the last frame counted said another one follows it
+   while (true) {
+     if (stream.BitsRemaining() < kBitsPerFrameHeader) {
++      // A frame whose 15-bit length runs into the next packet still starts here: count it (Decode
++      // reads its length across the boundary). Skipping it dropped 21 ms of audio and made the
++      // frame before it look like the packet's last.
++      if (stream.BitsRemaining() > 0 && (next_frame_follows || packet_info.frame_count_ == 0)) {
++        if (stream.offset_bits() == frame_offset) {
++          packet_info.current_frame_ = packet_info.frame_count_;
++          packet_info.current_frame_size_ = 0;
++        }
++        packet_info.frame_count_++;
++      }
+       break;
+     }
+ 
+@@ -380,7 +447,8 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
+ 
+     stream.Advance(frame_size - 1);
+ 
+-    if (stream.Read(1) == 0) {
++    next_frame_follows = stream.Read(1) != 0;
++    if (!next_frame_follows) {
+       break;
+     }
+   }
+@@ -545,6 +613,16 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
  
    uint8_t* current_input_buffer = GetCurrentInputBuffer(data);
  
@@ -306,7 +360,7 @@ index 11b83be..ae4b635 100644
    input_buffer_.fill(0);
  
    // Loop-end frame: decode it here (output limited to loop_subframe_end),
-@@ -588,10 +646,13 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+@@ -588,10 +666,13 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
  
    // Full packet skip (0xFF) -- no new frames begin in this packet.
    if (skip_count == 0xFF) {
@@ -322,7 +376,7 @@ index 11b83be..ae4b635 100644
      }
      data->input_buffer_read_offset = next_input_offset;
      return;
-@@ -722,20 +783,16 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+@@ -722,20 +803,16 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
      return;
    }
  
