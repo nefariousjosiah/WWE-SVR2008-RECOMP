@@ -156,9 +156,9 @@ class SettingsMenuDialog : public rex::ui::ImGuiDialog {
          {"16:9 (original)", "16:10 (experimental)", "21:9 (experimental)", "32:9 (experimental)",
           "Stretch to fill"},
          "Experimental: 16:10 (Steam Deck, many laptops), 21:9 and 32:9 (ultrawide) fill the "
-         "screen in gameplay only for now: matches, entrances and cutscenes show more of the "
-         "arena, nothing stretched, the HUD in its usual place. Menus stay 16:9. Stretch fills "
-         "any screen by stretching the 16:9 picture."},
+         "whole screen. Matches, entrances and 3D scenes show more of the arena, nothing "
+         "stretched; menu backgrounds reach the edges while text and panels keep their shape. "
+         "Stretch fills any screen by stretching the 16:9 picture."},
         {"Edge blur", {"Off (sharp)", "On (original)"},
          "The game's own anti-aliasing blurs every edge, and more so above 720p. Off keeps the "
          "picture sharp; On is how the console looked."},

@@ -258,11 +258,23 @@ void SvrApplyScissor(VideoState &s, u32 device_guest) {
   const SvrPixelMap &map = SvrCurrentPixelMap();
   plume::RenderRect rc{i32(SvrScaled(left)), i32(SvrScaled(top)), i32(SvrScaled(right)),
                        i32(SvrScaled(bottom))};
-  if (map.scale_x != SvrRenderScale() || map.scale_y != SvrRenderScale() ||
-      map.offset_x != 0.0f || map.offset_y != 0.0f) {
+  const auto *shaped = s.render_target ? s.render_target : s.depth_stencil;
+  if (shaped && map.whole && left == 0 && top == 0 && right >= 1280 && bottom >= 720 &&
+      (map.offset_x != 0.0f || map.offset_y != 0.0f || map.scale_x != SvrRenderScale() ||
+       map.scale_y != SvrRenderScale())) {
+    // A scissor of the whole screen on a shaped target (wide and tall screens): the whole target,
+    // so 2D drawn past the screen's edge (a background made wider than 16:9) shows there.
+    rc = {0, 0, i32(shaped->width), i32(shaped->height)};
+  } else if (map.scale_x != SvrRenderScale() || map.scale_y != SvrRenderScale() ||
+             map.offset_x != 0.0f || map.offset_y != 0.0f) {
     const auto px = [&](u32 v) { return i32(std::lround(float(v) * map.scale_x + map.offset_x)); };
     const auto py = [&](u32 v) { return i32(std::lround(float(v) * map.scale_y + map.offset_y)); };
     rc = {px(left), py(top), px(right), py(bottom)};
+    // A zoomed background reaches past the target: the scissor stays on it.
+    const auto *target = s.render_target ? s.render_target : s.depth_stencil;
+    const i32 w = target ? i32(target->width) : 32768, h = target ? i32(target->height) : 32768;
+    rc = {std::clamp(rc.left, 0, w), std::clamp(rc.top, 0, h), std::clamp(rc.right, 0, w),
+          std::clamp(rc.bottom, 0, h)};
   }
   s.command_list->setScissors(&rc, 1);
 }

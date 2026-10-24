@@ -7,11 +7,7 @@ namespace svr {
 // 16:9 (and for "stretch to fill").
 double WideAspect();
 
-// Whether the frame being drawn is a scene (match, entrance, cutscene: the game set up a scene
-// camera within the last half second) that fills the shape. Menus stay 16:9, in the middle.
-bool WideScene();
-
-// How much wider (Wide) or taller (Tall) than 16:9 the scene is drawn: 1 when it isn't.
+// How much wider (Wide) or taller (Tall) than 16:9 the game is drawn: 1 when it isn't.
 float WideFactor();
 float TallFactor();
 

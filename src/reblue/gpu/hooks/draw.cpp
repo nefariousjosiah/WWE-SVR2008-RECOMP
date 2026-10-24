@@ -59,6 +59,16 @@ namespace {
 
 namespace xe = rex::graphics::xenos;
 
+#if defined(SVR_NATIVE_RENDERER)
+// How a BeginVertices draw was fitted to a shaped (wider or taller) target, SvrFitUpVertices.
+enum class SvrUpFit : u8 {
+  kNone,     // not fitted: the viewport fills the target (3D, or not a shaped target)
+  kCentred,  // in its vertices: kept in shape in the 16:9 middle, and cut off at its edges
+  kSpread,   // in its vertices: reaching the target's edges
+  kInset,    // drawn in a part of the screen: that part's viewport kept in shape in the middle
+};
+#endif
+
 struct DrawArgs {
   bool indexed = false;
   bool is_up = false;
@@ -66,37 +76,193 @@ struct DrawArgs {
   i32 baseVertexIndex = 0;
   u32 startIndex = 0;
   u32 startVertex = 0;
-  u32 upDataVa = 0;  // BeginVertices: the vertices as the game wrote them (big-endian)
-  u32 upStride = 0;
+#if defined(SVR_NATIVE_RENDERER)
+  SvrUpFit svrFit = SvrUpFit::kNone;
+#endif
 };
 
 #if defined(SVR_NATIVE_RENDERER)
-// Wide and tall screens (src/widescreen.cpp): whether a draw into a shaped (wider or taller) target
-// is a piece of the 2D HUD, which stays its size in the target's 16:9 middle. The HUD is drawn
-// with BeginVertices, without depth, from positions in the game's 1280x720 pixels; a quad covering
-// the whole screen (a fade, a full-screen pass over the scene) is not HUD and fills the target, as
-// does everything 3D.
-bool SvrHudDraw(u32 device_guest, const DrawArgs &args) {
-  if (!args.upDataVa || args.upStride < 8 || !args.vertexOrIndexCount)
+// Wide and tall screens (src/widescreen.cpp): how 2D (BeginVertices without depth, positions in the
+// game's 1280x720 pixels) is fitted to a shaped target. It is done to the uploaded copy of its
+// vertices, with the viewport over the whole target: the rasterizer clips to the viewport's box, so
+// a viewport kept to the 16:9 middle could never show what the game drew past the screen's edge.
+// - Panels, text and icons keep their shape and stay in the middle.
+// - A quad reaching an edge of the screen (a full-width bar) or running past it (a side panel) is
+//   anchored to that edge: its vertices out there move out to the target's edge and the ones inside
+//   stay put, so it still meets what it met on screen and runs on to the real edge.
+//   A detailed picture running past an edge (the title screen's photo) keeps its shape instead and
+//   shows what the game drew past the 16:9 edge.
+// - A quad covering the screen that doesn't read the scene is a backdrop: SvR's backgrounds are
+//   pictures, so they get half their widening as a stretch and half as an even zoom, which trims a
+//   little of their top and bottom. A full-screen pass over the scene stays exactly on it.
+// 3D fills the target: its camera was given the screen's shape, so it shows more of the world.
+// Whether a quad draws a detailed picture: more than 256 texels of its texture (slot 0) along an
+// axis, at under 2 screen pixels each (the title screen's photo). A panel or a bar is a small piece
+// of a UI sheet blown up.
+bool SvrDetailedPicture(const u8 *verts, u32 count, u32 stride, float width, float height) {
+  const auto &s = bd::gpu::state();
+  const auto *decl = s.vertex_declaration;
+  const auto *tex = s.textures[0];
+  if (!decl || !tex || !tex->width || !tex->height)
     return false;
+  for (u32 e = 0; e < decl->inputElementCount; ++e) {
+    const auto &el = decl->inputElements[e];
+    if (el.slotIndex != 0 || el.semanticIndex != 0 || !el.semanticName ||
+        std::strcmp(el.semanticName, "TEXCOORD") != 0 ||
+        el.format != plume::RenderFormat::R32G32_FLOAT || el.alignedByteOffset + 8 > stride)
+      continue;
+    float u0 = 1e9f, u1 = -1e9f, v0 = 1e9f, v1 = -1e9f;
+    for (u32 i = 0; i < count; ++i) {
+      const auto *uv = reinterpret_cast<const float *>(verts + i * stride + el.alignedByteOffset);
+      if (!std::isfinite(uv[0]) || !std::isfinite(uv[1]))
+        return false;
+      u0 = std::min(u0, uv[0]), u1 = std::max(u1, uv[0]);
+      v0 = std::min(v0, uv[1]), v1 = std::max(v1, uv[1]);
+    }
+    constexpr float kTexels = 256.0f, kBlownUp = 2.0f;
+    const float texels_x = (u1 - u0) * float(tex->width), texels_y = (v1 - v0) * float(tex->height);
+    return (texels_x > kTexels && width < kBlownUp * texels_x) ||
+           (texels_y > kTexels && height < kBlownUp * texels_y);
+  }
+  return false;
+}
+
+// A screen whose 2D is a few small pieces in one corner (the "Loading" indicator) has them moved to
+// the real corner of a wide (or tall) screen. Decided from the previous frame's centred 2D, which
+// such a screen repeats: at most kFewPieces draws, all in one quarter of the screen. side_x and
+// side_y: -1 left/top, 1 right/bottom, 0 stay in the middle.
+void SvrCornerSide(float min_x, float max_x, float min_y, float max_y, int &side_x, int &side_y) {
+  constexpr u32 kFewPieces = 12;
+  static std::mutex s_mutex;
+  static u64 s_frame = ~0ull;
+  static u32 s_count = 0;
+  static float s_min_x = 0.0f, s_max_x = 0.0f, s_min_y = 0.0f, s_max_y = 0.0f;
+  static int s_side_x = 0, s_side_y = 0;
+  std::lock_guard lock(s_mutex);
+  const u64 frame = bd::gpu::SvrFrameIndex();
+  if (frame != s_frame) {
+    const bool few = s_frame + 1 == frame && s_count && s_count <= kFewPieces;
+    const int x = s_max_x <= 640.0f ? -1 : s_min_x >= 640.0f ? 1 : 0;
+    const int y = s_max_y <= 360.0f ? -1 : s_min_y >= 360.0f ? 1 : 0;
+    s_side_x = few && x && y ? x : 0;
+    s_side_y = few && x && y ? y : 0;
+    s_frame = frame;
+    s_count = 0;
+    s_min_x = s_min_y = 1e9f;
+    s_max_x = s_max_y = -1e9f;
+  }
+  ++s_count;
+  s_min_x = std::min(s_min_x, min_x), s_max_x = std::max(s_max_x, max_x);
+  s_min_y = std::min(s_min_y, min_y), s_max_y = std::max(s_max_y, max_y);
+  side_x = s_side_x;
+  side_y = s_side_y;
+}
+
+SvrUpFit SvrFitUpVertices(u32 device_guest, u32 primitive_type, u8 *verts, u32 count,
+                          u32 stride) {
+  if (!verts || !count || stride < 8)
+    return SvrUpFit::kNone;
+  const auto &s = bd::gpu::state();
+  float wide = 1.0f, tall = 1.0f;
+  bd::gpu::SvrTargetShape(s.render_target ? s.render_target : s.depth_stencil, wide, tall);
+  if (wide == 1.0f && tall == 1.0f)
+    return SvrUpFit::kNone;
   // RB_DEPTHCONTROL (register 0x2200, device +0x2934): z_enable is bit 1.
   if (bd::mem::load<u32>(device_guest + 0x2934) & 2u)
-    return false;
+    return SvrUpFit::kNone;
+  const auto *dev = bd::mem::at<const bd::gpu::D3DDevice>(device_guest);
+  if (!dev)
+    return SvrUpFit::kNone;
+  const auto &vp = dev->viewport;
+  if (float(vp.X) != 0.0f || float(vp.Y) != 0.0f || float(vp.Width) < 1280.0f ||
+      float(vp.Height) < 720.0f)
+    return SvrUpFit::kInset;
+
+  // Uploaded already byte-swapped: the position is two host floats at the front of each vertex.
+  const auto pos = [verts, stride](u32 i) { return reinterpret_cast<float *>(verts + i * stride); };
   float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
-  const u32 count = std::min(args.vertexOrIndexCount, 64u);
   for (u32 i = 0; i < count; ++i) {
-    const u32 va = args.upDataVa + i * args.upStride;
-    const u32 xb = bd::mem::load<u32>(va), yb = bd::mem::load<u32>(va + 4);
-    float x, y;
-    std::memcpy(&x, &xb, 4);
-    std::memcpy(&y, &yb, 4);
-    if (!std::isfinite(x) || !std::isfinite(y))
-      return false;
-    min_x = std::min(min_x, x), max_x = std::max(max_x, x);
-    min_y = std::min(min_y, y), max_y = std::max(max_y, y);
+    const float *p = pos(i);
+    if (!std::isfinite(p[0]) || !std::isfinite(p[1]))
+      return SvrUpFit::kNone;
+    min_x = std::min(min_x, p[0]), max_x = std::max(max_x, p[0]);
+    min_y = std::min(min_y, p[1]), max_y = std::max(max_y, p[1]);
   }
-  const bool covers = min_x <= 1.0f && max_x >= 1279.0f && min_y <= 1.0f && max_y >= 719.0f;
-  return !covers;
+  // One primitive, not a batch (a line of text spans the screen without being a background).
+  const auto prim = static_cast<xe::PrimitiveType>(primitive_type);
+  const bool one = prim == xe::PrimitiveType::kTriangleStrip ||
+                   prim == xe::PrimitiveType::kTriangleFan || count <= 4;
+  constexpr float kEdge = 8.0f;  // authored extents this close to the screen edge reach it
+  bool fill_x = one && min_x <= kEdge && max_x >= 1280.0f - kEdge;
+  bool fill_y = one && min_y <= kEdge && max_y >= 720.0f - kEdge;
+  // A piece of a background picture drawn in parts (the title screen's picture is two halves over
+  // a full-screen one): taller than the screen, running past its side and reaching its middle. It
+  // is fitted like the picture it belongs to, or the parts would come apart.
+  if (one && min_y < -kEdge && max_y > 720.0f + kEdge &&
+      (min_x < -kEdge || max_x > 1280.0f + kEdge) && min_x <= 640.0f + kEdge &&
+      max_x >= 640.0f - kEdge)
+    fill_x = fill_y = true;
+  if (fill_x && fill_y) {
+    // One reading a shaped target (the scene) is a pass over the scene. Slot 0's texture counts
+    // however the game bound it (the final passes over a match bind its copy past SetTexture's
+    // table); the other slots by that table, since a slot keeps what it last held. SetTexture
+    // (sub_82237868) keeps the bound D3D texture per slot at device + (slot + 3134) * 4.
+    float shaped_x = 1.0f, shaped_y = 1.0f;
+    bd::gpu::SvrTargetShape(s.textures[0], shaped_x, shaped_y);
+    bool backdrop = shaped_x == 1.0f && shaped_y == 1.0f;
+    for (u32 slot = 0; slot < bd::gpu::kTextureSlots && backdrop; ++slot)
+      backdrop = !bd::gpu::SvrShapedTexture(bd::mem::load<u32>(device_guest + (3134u * 4u) + slot * 4u));
+    if (backdrop) {
+      // Fills the long side; the zoom half of the widening also scales the other, about the middle.
+      const float zoom = std::sqrt(std::max(wide, tall));
+      for (u32 i = 0; i < count; ++i) {
+        float *p = pos(i);
+        if (wide != 1.0f)
+          p[1] = 360.0f + (p[1] - 360.0f) * zoom;
+        else
+          p[0] = 640.0f + (p[0] - 640.0f) * zoom;
+      }
+    }
+    return SvrUpFit::kSpread;
+  }
+
+  // A quad running past an edge: a panel or a bar is anchored to it, a detailed picture keeps its
+  // shape and shows what the game drew past the 16:9 edge (SvrDetailedPicture). A small one (a
+  // letter of scrolling text leaving the screen) is only cut off there, as on a 16:9 screen.
+  constexpr float kAnchorSize = 64.0f;
+  const bool big_x = one && max_x - min_x >= kAnchorSize;
+  const bool big_y = one && max_y - min_y >= kAnchorSize;
+  const bool past_x = big_x && (min_x < -kEdge || max_x > 1280.0f + kEdge);
+  const bool past_y = big_y && (min_y < -kEdge || max_y > 720.0f + kEdge);
+  const bool picture = (past_x || past_y) &&
+                       SvrDetailedPicture(verts, count, stride, max_x - min_x, max_y - min_y);
+  const bool left = big_x && (fill_x || (!picture && min_x < -kEdge));
+  const bool right = big_x && (fill_x || (!picture && max_x > 1280.0f + kEdge));
+  const bool top = big_y && (fill_y || (!picture && min_y < -kEdge));
+  const bool bottom = big_y && (fill_y || (!picture && max_y > 720.0f + kEdge));
+  // The band on each side of the 16:9 screen, in the game's pixels.
+  const float pad_x = 640.0f * (wide - 1.0f), pad_y = 360.0f * (tall - 1.0f);
+  const bool overscan = (wide != 1.0f && past_x) || (tall != 1.0f && past_y);
+  int side_x = 0, side_y = 0;
+  if (!overscan && !(wide != 1.0f && (left || right)) && !(tall != 1.0f && (top || bottom)))
+    SvrCornerSide(min_x, max_x, min_y, max_y, side_x, side_y);
+  bool anchored = side_x != 0 || side_y != 0;
+  for (u32 i = 0; i < count; ++i) {
+    float *p = pos(i);
+    float x = p[0] + float(side_x) * pad_x, y = p[1] + float(side_y) * pad_y;
+    if (wide != 1.0f && left && x <= kEdge)
+      x -= pad_x, anchored = true;
+    else if (wide != 1.0f && right && x >= 1280.0f - kEdge)
+      x += pad_x, anchored = true;
+    if (tall != 1.0f && top && y <= kEdge)
+      y -= pad_y, anchored = true;
+    else if (tall != 1.0f && bottom && y >= 720.0f - kEdge)
+      y += pad_y, anchored = true;
+    // Into the viewport over the whole target, with the 16:9 screen in its middle.
+    p[0] = (x + pad_x) / wide;
+    p[1] = (y + pad_y) / tall;
+  }
+  return anchored || overscan ? SvrUpFit::kSpread : SvrUpFit::kCentred;
 }
 #endif
 
@@ -228,22 +394,29 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const char *name,
   if (const auto *dev = bd::mem::at<const bd::gpu::D3DDevice>(device_guest)) {
     const auto &vp = dev->viewport;
     // Host targets are SvrRenderScale() times the guest's size (a fraction at 480p and 1080p),
-    // and a shaped target (wide and tall screens) that again wider or taller: the scene fills it,
-    // the HUD keeps its size in its 16:9 middle.
+    // and a shaped target (wide and tall screens) that again wider or taller: 3D fills it, 2D is
+    // fitted in its vertices (SvrFitUpVertices).
     const float k = bd::gpu::SvrRenderScale();
     const auto *target = s.render_target ? s.render_target : s.depth_stencil;
     float wide = 1.0f, tall = 1.0f;
     bd::gpu::SvrTargetShape(target, wide, tall);
     bd::gpu::SvrPixelMap map{k * wide, k * tall, 0.0f, 0.0f};
-    // RB_DEPTHCONTROL (register 0x2200, device +0x2934): z_enable is bit 1.
-    if ((wide != 1.0f || tall != 1.0f) && (bd::mem::load<u32>(device_guest + 0x2934) & 2u))
-      bd::gpu::SvrNoteSceneDraw();
-    if ((wide != 1.0f || tall != 1.0f) && SvrHudDraw(device_guest, args)) {
-      map.scale_x = map.scale_y = k;
-      map.offset_x = (float(target->width) - float(bd::gpu::SvrScaled(1280))) * 0.5f;
-      map.offset_y = (float(target->height) - float(bd::gpu::SvrScaled(720))) * 0.5f;
+    // RB_DEPTHCONTROL (register 0x2200, device +0x2934): z_enable is bit 1. 3D drawn into a shaped
+    // target is squeezed if its camera still has the 16:9 shape (gpu/constant_buffers.cpp).
+    const bool depth_tested = (bd::mem::load<u32>(device_guest + 0x2934) & 2u) != 0;
+    bd::gpu::SvrSetViewSqueeze(depth_tested ? 1.0f / wide : 1.0f, depth_tested ? 1.0f / tall : 1.0f);
+    bd::gpu::SvrPixelMap scissor = map;
+    if (args.svrFit != SvrUpFit::kNone && target) {
+      // 2D fitted in its vertices (SvrFitUpVertices): the game's scissor is placed as its 16:9
+      // screen is, in the middle, and one of the whole screen opens the whole target only to a quad
+      // reaching the target's edges.
+      scissor = {k, k, (float(target->width) - float(bd::gpu::SvrScaled(1280))) * 0.5f,
+                 (float(target->height) - float(bd::gpu::SvrScaled(720))) * 0.5f,
+                 args.svrFit == SvrUpFit::kSpread};
+      if (args.svrFit == SvrUpFit::kInset)
+        map = scissor;
     }
-    bd::gpu::SvrSetPixelMap(map);
+    bd::gpu::SvrSetPixelMap(scissor);
     bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.x,
                                          float(vp.X) * map.scale_x + map.offset_x);
     bd::gpu::Video::SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.y,
@@ -268,6 +441,25 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const char *name,
   if (!bd::gpu::Video::BindDrawFramebufferLocked()) {
     return;
   }
+#if defined(SVR_NATIVE_RENDERER)
+  // Wide and tall screens: a shaped target this frame hasn't cleared gets the bands outside its
+  // 16:9 middle cleared (svr_resources.h SvrTakeBandClear), so a screen that only draws the middle
+  // shows black there, not what an earlier screen left.
+  if (auto *rt = s.render_target; rt && s.command_list) {
+    float wide = 1.0f, tall = 1.0f;
+    bd::gpu::SvrTargetShape(rt, wide, tall);
+    if ((wide != 1.0f || tall != 1.0f) && bd::gpu::SvrTakeBandClear(rt)) {
+      const i32 w = i32(rt->width), h = i32(rt->height);
+      const i32 pad_x = (w - i32(bd::gpu::SvrScaled(1280))) / 2;
+      const i32 pad_y = (h - i32(bd::gpu::SvrScaled(720))) / 2;
+      const plume::RenderRect bands[2] = {
+          wide != 1.0f ? plume::RenderRect(0, 0, pad_x, h) : plume::RenderRect(0, 0, w, pad_y),
+          wide != 1.0f ? plume::RenderRect(w - pad_x, 0, w, h)
+                       : plume::RenderRect(0, h - pad_y, w, h)};
+      s.command_list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f), bands, 2);
+    }
+  }
+#endif
   if (!bd::gpu::Video::FlushRenderStateLocked(device_guest)) {
     return; // FlushRenderState logs its own reason
   }
@@ -328,8 +520,14 @@ void FitDesignCanvasVertices(u8 *verts, u32 primitiveType, u32 vertexCount,
 void InsetQuadUVs(u8 *verts, u32 vertexCount, u32 vertexStride, UVEdges edges);
 bool IsScreenSpriteQuad(u32 primitiveType, u32 vertexCount, u32 vertexStride);
 
+#if defined(SVR_NATIVE_RENDERER)
+bool UploadAndBindUpVertices(u32 primitiveType, u32 pVertexData, u32 vertexCount,
+                             u32 vertexStride, u32 device_guest = 0,
+                             SvrUpFit *fit = nullptr) {
+#else
 bool UploadAndBindUpVertices(u32 primitiveType, u32 pVertexData,
                              u32 vertexCount, u32 vertexStride) {
+#endif
   if (!pVertexData || !vertexCount || !vertexStride)
     return false;
   const u32 totalSize = vertexCount * vertexStride;
@@ -347,6 +545,9 @@ bool UploadAndBindUpVertices(u32 primitiveType, u32 pVertexData,
     InsetQuadUVs(alloc.memory, vertexCount, vertexStride, UVEdges::All);
   else if (IsScreenSpriteQuad(primitiveType, vertexCount, vertexStride))
     InsetQuadUVs(alloc.memory, vertexCount, vertexStride, UVEdges::CellSeam);
+#else
+  if (fit)
+    *fit = SvrFitUpVertices(device_guest, primitiveType, alloc.memory, vertexCount, vertexStride);
 #endif
   bd::gpu::Video::SetVertexStream(0, alloc.ref, alloc.size, vertexStride);
   return true;
@@ -666,13 +867,18 @@ u32 D3DDevice_EndVertices_hook(u32 /*device_guest*/) {
 
 #if defined(SVR_NATIVE_RENDERER)
   bd::gpu::SvrDrawLogVertices(p.data_va, p.vertex_count, p.stride);
-#endif
+  SvrUpFit fit = SvrUpFit::kNone;
+  const bool ok = UploadAndBindUpVertices(p.primitive_type, p.data_va, p.vertex_count, p.stride,
+                                         p.device, &fit);
+#else
   const bool ok = UploadAndBindUpVertices(p.primitive_type, p.data_va,
                                          p.vertex_count, p.stride);
+#endif
   DrawArgs args{};
   args.is_up = ok;
-  args.upDataVa = p.data_va;
-  args.upStride = p.stride;
+#if defined(SVR_NATIVE_RENDERER)
+  args.svrFit = ok ? fit : SvrUpFit::kNone;
+#endif
   args.vertexOrIndexCount = p.vertex_count;
   args.startVertex = 0;
   DispatchDraw(p.device, p.primitive_type, "BeginVertices", args);
@@ -742,6 +948,9 @@ u32 D3DDevice_BeginTiling_hook(u32 /*device_guest*/, u32 /*Flags*/,
   }
   bd::gpu::Video::Clear(bd::gpu::kClearAll, color_argb, float(ClearZ),
                         ClearStencil);
+#if defined(SVR_NATIVE_RENDERER)
+  bd::gpu::SvrNoteTargetCleared(bd::gpu::state().render_target);
+#endif
   return 0;
 }
 

@@ -8,6 +8,7 @@
 #include "gpu/constant_buffers.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -34,6 +35,7 @@
 #endif
 
 #if defined(SVR_NATIVE_RENDERER)
+#include "svr_resources.h"
 REXCVAR_DECLARE(bool, svr_edge_blur);       // gpu/hooks/draw.cpp
 REXCVAR_DECLARE(bool, svr_depth_of_field);  // gpu/hooks/draw.cpp
 #endif
@@ -386,7 +388,18 @@ ConstantAllocation UploadVertexShaderConstants(u32 device_guest) {
   if (!device_guest)
     return {};
   const u32 va = device_guest + offsetof(D3DDevice, vsFloatConstants);
-  if (SameAsLastUpload(s.vsConstants, va, false))
+  u64 pin = 0;
+#if defined(SVR_NATIVE_RENDERER)
+  float squeeze_x = 1.0f, squeeze_y = 1.0f;
+  SvrViewSqueeze(squeeze_x, squeeze_y);
+  if (squeeze_x != 1.0f || squeeze_y != 1.0f) {
+    u32 bx, by;
+    std::memcpy(&bx, &squeeze_x, 4);
+    std::memcpy(&by, &squeeze_y, 4);
+    pin = (u64(bx) << 32 | by) | 1ull;
+  }
+#endif
+  if (SameAsLastUpload(s.vsConstants, va, pin))
     return {};
   auto alloc = Allocate(s, kConstantBlockBytes, kCBVAlignment);
   if (!alloc.memory) {
@@ -394,6 +407,25 @@ ConstantAllocation UploadVertexShaderConstants(u32 device_guest) {
     return {};
   }
   CopyByteSwap32FlushNaN(alloc.memory, va, kConstantBlockBytes);
+#if defined(SVR_NATIVE_RENDERER)
+  if (pin) {
+    // SvR's 3D shaders read the view-projection from c54-c57, one row each. The lengths of its x
+    // and y rows (their xyz; the view's rotation keeps lengths) give the shape its camera was made
+    // for: a 16:9 one is squeezed to the target's shape (svr_resources.h SvrSetViewSqueeze). A
+    // camera already given the screen's shape (widescreen.cpp) is left as it is.
+    auto *c = reinterpret_cast<float *>(alloc.memory);
+    float *row_x = c + 54 * 4, *row_y = c + 55 * 4;
+    const float lx = std::sqrt(row_x[0] * row_x[0] + row_x[1] * row_x[1] + row_x[2] * row_x[2]);
+    const float ly = std::sqrt(row_y[0] * row_y[0] + row_y[1] * row_y[1] + row_y[2] * row_y[2]);
+    constexpr float kAspect16x9 = 16.0f / 9.0f;
+    if (lx > 0.0f && std::fabs(ly / lx - kAspect16x9) < 0.03f * kAspect16x9) {
+      for (int i = 0; i < 4; ++i) {
+        row_x[i] *= squeeze_x;
+        row_y[i] *= squeeze_y;
+      }
+    }
+  }
+#endif
   return alloc;
 }
 

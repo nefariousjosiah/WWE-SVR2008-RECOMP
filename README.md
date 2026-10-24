@@ -79,8 +79,8 @@ ID `5E35F037`, about 7.8 GB).
   bought in the Shop. Best treated as permanent: switching it off brings back your own progress,
   but rewards you earn while it's on are not saved.
 - **Screen shape (experimental):** 16:10 (Steam Deck, many laptops), 21:9 and 32:9 (ultrawide).
-  Gameplay fills the screen (matches, entrances and cutscenes show more of the arena, nothing
-  stretched, the HUD in its usual place); menus stay 16:9 for now.
+  The whole game fills the screen: matches, entrances and cutscenes show more of the arena, nothing
+  stretched; menu backgrounds reach the edges while text and panels keep their shape.
 - **Controllers:** plug yours in before starting; each controller is its own player. Playing alone
   and the game says player 2 is disconnected, or your controller stops responding? A controller that
   reconnects, or shows up twice through Steam Input / DS4Windows / DSX, can become player 2: set
@@ -125,8 +125,8 @@ The Windows release runs through Proton, Steam's compatibility layer: 720p at 60
 - **The first start** takes a little longer while Proton sets itself up.
 - **Settings:** press **View + Menu** together. To use a back button instead: the game's
   *Controller settings* > *Edit Layout* > *Back Grip Buttons* > **L4** > *Keyboard* > **F1**.
-- **Black bars:** the game is 16:9 and the Deck's screen 16:10; *Screen shape* > *Stretch to fill*
-  in the settings menu fills it.
+- **Black bars:** the game is 16:9 and the Deck's screen 16:10; *Screen shape* > *16:10* in the
+  settings menu fills it without stretching (experimental), *Stretch to fill* by stretching.
 - **Quit** with the Steam button > *Exit game*. You can rename the shortcut (*WWE SmackDown vs. Raw
   2008*) and set its artwork in its properties.
 

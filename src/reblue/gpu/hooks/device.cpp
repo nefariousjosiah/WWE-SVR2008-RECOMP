@@ -46,6 +46,7 @@ u32 D3DDevice_Clear_hook([[maybe_unused]] u32 device, [[maybe_unused]] u32 count
                          u32 /*z_gpr_slot*/, u32 stencil, u32 /*edram_clear*/) {
 #if defined(SVR_NATIVE_RENDERER)
   bd::gpu::SvrDrawLogClear(device, count, rects, flags, color);
+  bd::gpu::SvrNoteTargetCleared(bd::gpu::state().render_target);
 #endif
   bd::gpu::Video::Clear(flags, color, float(z), stencil);
   return 0;

@@ -35,7 +35,6 @@ bool SvrDisplaySize(uint32_t &w, uint32_t &h);
 bool SvrOnSteamDeck();
 // src/widescreen.cpp.
 namespace svr {
-double WideAspect();
 float WideFactor();
 float TallFactor();
 }  // namespace svr
@@ -80,7 +79,6 @@ std::unordered_map<u32, ShapedHost> g_shaped_targets;
 std::unordered_map<const GuestTexture *, std::pair<float, float>> g_shape_of;  // host -> factors
 std::atomic<float> g_frame_wide{1.0f};
 std::atomic<float> g_frame_tall{1.0f};
-std::atomic<u32> g_scene_draws{0};  // this frame's (SvrNoteSceneDraw)
 SvrPixelMap g_pixel_map;  // the current draw's (recorded under the draw lock)
 
 bool SceneSized(u32 width, u32 height) { return width == 1280 && height == 720; }
@@ -480,17 +478,8 @@ void SvrOnFrame() {
   SvrDiagEndFrame();
   SvrWatchdogHeartbeat();
   const u64 frame = g_frame.fetch_add(1, std::memory_order_relaxed);
-  // The next frame's shape (src/widescreen.cpp), fixed for the whole frame. Held while the scene
-  // is still drawn without a scene camera (the pause menu over a match).
-  float wide = svr::WideFactor(), tall = svr::TallFactor();
-  const float was_wide = g_frame_wide.load(std::memory_order_relaxed);
-  const float was_tall = g_frame_tall.load(std::memory_order_relaxed);
-  if (wide == 1.0f && tall == 1.0f && (was_wide != 1.0f || was_tall != 1.0f) &&
-      g_scene_draws.load(std::memory_order_relaxed) > 0 && svr::WideAspect() != 0.0) {
-    wide = was_wide;
-    tall = was_tall;
-  }
-  g_scene_draws.store(0, std::memory_order_relaxed);
+  // The next frame's shape (src/widescreen.cpp), fixed for the whole frame.
+  const float wide = svr::WideFactor(), tall = svr::TallFactor();
   if (wide != g_frame_wide.load(std::memory_order_relaxed) ||
       tall != g_frame_tall.load(std::memory_order_relaxed))
     BD_INFO("SvR native: frames now drawn {:.3f} wide, {:.3f} tall", wide, tall);
@@ -513,6 +502,17 @@ void SvrFrameShape(float &wide, float &tall) {
   tall = g_frame_tall.load(std::memory_order_relaxed);
 }
 
+bool SvrShapedTexture(u32 texture_va) {
+  if (!texture_va)
+    return false;
+  float wide = 1.0f, tall = 1.0f;
+  SvrFrameShape(wide, tall);
+  std::lock_guard lock(g_mutex);
+  auto it = g_shaped_targets.find(texture_va);
+  return it != g_shaped_targets.end() && it->second.host && it->second.wide == wide &&
+         it->second.tall == tall;
+}
+
 void SvrTargetShape(const GuestTexture *host, float &wide, float &tall) {
   wide = tall = 1.0f;
   if (!host)
@@ -524,9 +524,39 @@ void SvrTargetShape(const GuestTexture *host, float &wide, float &tall) {
   }
 }
 
-void SvrNoteSceneDraw() { g_scene_draws.fetch_add(1, std::memory_order_relaxed); }
-
 void SvrSetPixelMap(const SvrPixelMap &map) { g_pixel_map = map; }
+
+namespace {
+float g_squeeze_x = 1.0f, g_squeeze_y = 1.0f;  // the current draw's (recorded under the draw lock)
+}  // namespace
+
+namespace {
+std::unordered_map<const GuestTexture *, u64> g_band_frame;  // host -> frame its bands are clean
+}  // namespace
+
+void SvrNoteTargetCleared(const GuestTexture *host) {
+  if (host)
+    g_band_frame[host] = g_frame.load(std::memory_order_relaxed);
+}
+
+bool SvrTakeBandClear(const GuestTexture *host) {
+  const u64 frame = g_frame.load(std::memory_order_relaxed);
+  u64 &done = g_band_frame[host];
+  if (done == frame)
+    return false;
+  done = frame;
+  return true;
+}
+
+void SvrSetViewSqueeze(float x, float y) {
+  g_squeeze_x = x;
+  g_squeeze_y = y;
+}
+
+void SvrViewSqueeze(float &x, float &y) {
+  x = g_squeeze_x;
+  y = g_squeeze_y;
+}
 const SvrPixelMap &SvrCurrentPixelMap() { return g_pixel_map; }
 
 // The game writes texture memory with the CPU whenever it likes (every Bink movie frame, menus

@@ -36,7 +36,7 @@ u64 TargetFrame() {
   return frame;
 }
 
-// SetTexture (sub_82255270) keeps the bound D3D texture per slot at device + (slot + 3178) * 4.
+// SetTexture (sub_82237868) keeps the bound D3D texture per slot at device + (slot + 3134) * 4.
 constexpr u32 kBoundTextureTable = 3134u * 4u;
 
 std::string Host(const GuestTexture *t) {

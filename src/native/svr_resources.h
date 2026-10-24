@@ -27,26 +27,42 @@ GuestTexture *SvrResolveTexture(u32 texture_va);
 // Called once per presented frame (mirror checks are per frame).
 void SvrOnFrame();
 
-// Wide and tall screens (src/widescreen.cpp). In a frame that fills a screen shape other than
-// 16:9, the game's 1280x720 targets (its scene and depth, resolves of them, the front buffer) are
+// Wide and tall screens (src/widescreen.cpp). With a screen shape other than 16:9 picked, the
+// game's 1280x720 targets (its scene and depth, resolves of them, the front buffer) are
 // drawn through a second host counterpart SvrFrameShape() times the usual width (wide) or height
-// (tall); every other target, and every target in a 16:9 frame, keeps its usual one. The shape is
-// taken once per frame so a frame never mixes the two.
+// (tall); every other target keeps its usual one. The shape is taken once per frame, so a change
+// in the settings menu never mixes the two within a frame.
 void SvrFrameShape(float &wide, float &tall);
 // The factors a host target was made with (1, 1 for every target but those).
 void SvrTargetShape(const GuestTexture *host, float &wide, float &tall);
-// A depth-tested (3D) draw into a shaped target: the scene is still being drawn. A frame starts
-// the shape when the game set up a scene camera (widescreen.cpp); it keeps it while the scene is
-// drawn even without one, as behind the pause menu, and drops it on the first frame without.
-void SvrNoteSceneDraw();
+// Whether a game texture is one of those targets, drawn at this frame's shape (a full-screen pass
+// reading the scene samples one; a menu background doesn't).
+bool SvrShapedTexture(u32 texture_va);
 
 // Where the current draw's guest pixels land in its host target: host = guest * scale + offset
 // (the internal resolution, the target's shape, and for the HUD on a wide target its 16:9 middle).
 struct SvrPixelMap {
   float scale_x = 1.0f, scale_y = 1.0f, offset_x = 0.0f, offset_y = 0.0f;
+  // A scissor of the whole screen opens the whole shaped target (not just the 16:9 middle).
+  bool whole = true;
 };
 void SvrSetPixelMap(const SvrPixelMap &map);
 const SvrPixelMap &SvrCurrentPixelMap();
+
+// The current draw's view squeeze: a 3D draw into a shaped target whose camera still has the 16:9
+// shape (any camera but the scene camera widescreen.cpp widens: the menus' 3D, the title screen)
+// gets its view-projection's x row (wide) or y row (tall) scaled by this before the draw, so it
+// too shows more of its scene instead of being stretched (gpu/constant_buffers.cpp). 1, 1 for
+// every other draw.
+void SvrSetViewSqueeze(float x, float y);
+void SvrViewSqueeze(float &x, float &y);
+
+// The game cleared this target (its own Clear). A shaped target the game doesn't clear in a frame
+// (a 2D screen that only draws its 16:9 middle) gets the bands outside that middle cleared to black
+// before its first draw, or they would keep whatever an earlier screen left there.
+void SvrNoteTargetCleared(const GuestTexture *host);
+// Whether this frame's bands of a shaped target still need that clear (marks them done).
+bool SvrTakeBandClear(const GuestTexture *host);
 
 // Internal resolution, as the height the guest's 720 lines become: host render targets and
 // resolve textures are SvrRenderHeight() / 720 times the guest's size (480p and 1080p are
