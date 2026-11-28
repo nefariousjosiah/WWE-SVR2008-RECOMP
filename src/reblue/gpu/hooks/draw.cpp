@@ -929,7 +929,7 @@ u32 D3DDevice_Resolve_hook(u32 device_guest, u32 Flags, u32 pSourceRect,
   bd::gpu::Video::TrackResolveSource(Flags, dst, DestLevel, DestSliceOrFace);
   bd::gpu::Video::ResolveRtToTexture(dst);
 #if defined(SVR_NATIVE_RENDERER)
-  bd::gpu::SvrWriteBackResolve(pDestTexture, dst);
+  bd::gpu::SvrWriteBackResolve(pDestTexture, dst, device_guest);
 #endif
   return 0;
 }
@@ -954,7 +954,7 @@ u32 D3DDevice_BeginTiling_hook(u32 /*device_guest*/, u32 /*Flags*/,
   return 0;
 }
 
-u32 D3DDevice_EndTiling_hook(u32 /*device_guest*/, u32 ResolveFlags,
+u32 D3DDevice_EndTiling_hook(u32 device_guest, u32 ResolveFlags,
                              u32 /*pResolveRects*/, u32 pDestTexture,
                              u32 /*pClearColor*/, u32 /*ClearZ*/,
                              u32 /*ClearStencil*/, u32 /*pParameters*/) {
@@ -980,7 +980,7 @@ u32 D3DDevice_EndTiling_hook(u32 /*device_guest*/, u32 ResolveFlags,
   bd::gpu::Video::TrackResolveSource(ResolveFlags, dst);
   bd::gpu::Video::ResolveRtToTexture(dst);
 #if defined(SVR_NATIVE_RENDERER)
-  bd::gpu::SvrWriteBackResolve(pDestTexture, dst);
+  bd::gpu::SvrWriteBackResolve(pDestTexture, dst, device_guest);
 #endif
   return 0;
 }

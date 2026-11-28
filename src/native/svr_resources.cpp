@@ -10,6 +10,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <xxhash.h>
@@ -305,7 +306,29 @@ GuestTexture *SvrResolveTarget(u32 texture_va) {
 // result is read back into guest memory, which stalls for the GPU; a texture resolved again and
 // again (shadows, the screen, effects redrawn every few frames) is skipped once seen in several
 // frames running, so the wait happens for one-off captures and while loading, not during play.
-void SvrWriteBackResolve(u32 texture_va, GuestTexture *dst) {
+//
+// Copies of the screen are skipped too, and so are the smaller 16:9 copies (640x360 down to
+// 160x90): those are the game's screen effects (the start of an entrance, the camera cut before a
+// finisher, the blur levels behind the glow), which only the GPU reads. They are copied at the
+// internal resolution, so at 8K each one waited over 100 ms for the GPU: the picture froze for half
+// a second before finishers, and entrances ran a second behind their music (GitHub issue #15).
+// "The screen" is the render target the game copies into the front buffer to present (the
+// effects copy that same target). The Create-a-Superstar photo is a 1280x720 copy as well, but the
+// game draws it in a render target of its own first, so it is still copied back.
+namespace {
+std::atomic<u32> g_front_buffer{0};  // the texture the game presented last (SvrNoteFrontBuffer)
+u32 g_screen_target = 0;             // the render target copied into it (render thread only)
+}  // namespace
+
+void SvrNoteFrontBuffer(u32 texture_va) {
+  g_front_buffer.store(texture_va, std::memory_order_relaxed);
+}
+
+void SvrWriteBackResolve(u32 texture_va, GuestTexture *dst, u32 device_guest) {
+  const auto *device = bd::mem::try_at<const D3DDevice>(device_guest);
+  const u32 source = device ? u32(device->renderTargetShadow[0]) : 0;
+  if (texture_va == g_front_buffer.load(std::memory_order_relaxed) && source)
+    g_screen_target = source;
   struct Seen {
     u32 desc = 0;
     u64 last_frame = 0;
@@ -321,6 +344,16 @@ void SvrWriteBackResolve(u32 texture_va, GuestTexture *dst) {
       (fetch.format != rex::graphics::xenos::TextureFormat::k_8_8_8_8 &&
        fetch.format != rex::graphics::xenos::TextureFormat::k_8_8_8_8_A))
     return;
+  const u32 width = fetch.size_2d.width + 1, height = fetch.size_2d.height + 1;
+  const bool sixteen_nine = width <= 1280 && width * 9 == height * 16 && 1280 % width == 0;
+  if (sixteen_nine && (width < 1280 || (source && source == g_screen_target))) {
+    // Logged the first time each is seen (a few dozen at most).
+    static std::unordered_set<u64> logged;  // render thread only
+    if (logged.size() < 64 && logged.insert(u64(texture_va) << 32 | source).second)
+      BD_INFO("SvR resolve 0x{:08X}: {}x{} from target 0x{:08X} not copied back (a screen effect)",
+              texture_va, width, height, source);
+    return;
+  }
   const u64 frame = SvrFrameIndex();
   Seen &s = seen[texture_va];
   const bool first = s.desc != fetch.dword_1 || s.last_frame == 0;

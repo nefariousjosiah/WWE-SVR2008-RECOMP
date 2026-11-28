@@ -83,6 +83,7 @@ u32 D3DDevice_Swap_hook(u32 /*device*/, u32 front_buffer_va,
   // The FPS counter ticks inside the game's own Swap (a mid-function hook in the generated code),
   // which now runs before this.
   bd::gpu::SvrOnFrame();
+  bd::gpu::SvrNoteFrontBuffer(front_buffer_va);
 #endif
 #if defined(SVR_NATIVE_RENDERER)
   // Dev aid: SVR_PRESENT_TARGET=<guest texture address> presents that resolve target instead of
